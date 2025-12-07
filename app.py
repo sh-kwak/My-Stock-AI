@@ -9,6 +9,7 @@ import numpy as np
 import FinanceDataReader as fdr
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm # 폰트 관리
+import streamlit as st
 
 # -----------------------------------------------------------
 # [한글 폰트 자동 설정] (koreanize_matplotlib 대체)
@@ -31,19 +32,17 @@ def install_korean_font():
 install_korean_font()
 
 # -----------------------------------------------------------
-# [설정] API Key (Streamlit Secrets에서 가져옴)
+# [설정] API Key (오직 Streamlit Secrets에서만 가져옴)
 # -----------------------------------------------------------
-DEFAULT_APP_KEY = "PSTmwr8yGJqGMn86dWiwRVjCeQa54QtEoskT"
-DEFAULT_APP_SECRET = "RCPnw1rZVbs3jYdKwV6/5k5Rky+LCRJgO7s2oVc8kHKGFEubiiErLhf0w73m6XMBmtfetmY2P2EKxAC4Lyw/T/00h852W8Eoy6aZ187lIIY3KojtvwL3w86bL4vfDbbEWbKK0q2A2bpW0lJzlax5C/+0f6ptedDiInhyDRP16+DulwdUH30="
 
 try:
     APP_KEY = st.secrets["APP_KEY"]
     APP_SECRET = st.secrets["APP_SECRET"]
 except:
-    # Secrets가 없으면 코드 상단 변수 사용 (테스트용)
-    # 실제 배포 시에는 꼭 Secrets에 넣으세요!
-    APP_KEY = DEFAULT_APP_KEY
-    APP_SECRET = DEFAULT_APP_SECRET
+# Secrets가 없으면 경고 메시지를 띄우고 앱을 중단합니다.
+    st.error("🚨 API 키가 설정되지 않았습니다!")
+    st.info("Streamlit Cloud의 [Settings] -> [Secrets] 메뉴에 키를 입력해주세요.")
+    st.stop() # 더 이상 실행하지 않음
 
 BASE_URL = "https://openapi.koreainvestment.com:9443"
 
@@ -578,3 +577,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
