@@ -4,18 +4,35 @@ import requests
 import json
 import time
 import io
+import os # 파일 확인용
 import numpy as np
 import FinanceDataReader as fdr
 import matplotlib.pyplot as plt
-import koreanize_matplotlib # [필수] 한글 폰트 자동 설정
+import matplotlib.font_manager as fm # 폰트 관리
 
 # -----------------------------------------------------------
-# [설정] API Key (Streamlit Secrets 사용 권장)
+# [한글 폰트 자동 설정] (koreanize_matplotlib 대체)
 # -----------------------------------------------------------
-# 로컬 테스트용 (배포 시에는 주석 처리하고 st.secrets 사용 권장)
-# APP_KEY = "..." 
-# APP_SECRET = "..."
+@st.cache_resource
+def install_korean_font():
+    # 폰트 파일이 없으면 다운로드 (나눔고딕)
+    font_path = "NanumGothic.ttf"
+    if not os.path.exists(font_path):
+        url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf"
+        with open(font_path, "wb") as f:
+            f.write(requests.get(url).content)
+    
+    # 폰트 등록
+    fm.fontManager.addfont(font_path)
+    plt.rc('font', family='NanumGothic')
+    plt.rcParams['axes.unicode_minus'] = False # 마이너스 기호 깨짐 방지
 
+# 폰트 설정 실행
+install_korean_font()
+
+# -----------------------------------------------------------
+# [설정] API Key (Streamlit Secrets에서 가져옴)
+# -----------------------------------------------------------
 try:
     APP_KEY = st.secrets["APP_KEY"]
     APP_SECRET = st.secrets["APP_SECRET"]
@@ -492,3 +509,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
