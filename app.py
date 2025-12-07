@@ -476,9 +476,17 @@ def send_telegram_message(message):
     try:
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         data = {'chat_id': chat_id, 'text': message}
-        requests.post(url, data=data)
+        res = requests.post(url, data=data)
+        
+        if res.status_code != 200:
+            print(f"[텔레그램 오류] Status: {res.status_code}, Response: {res.text}")
+            st.error(f"텔레그램 전송 실패 (Code {res.status_code}): {res.text}")
+        else:
+            print("[텔레그램] 메시지 전송 성공")
+            
     except Exception as e:
         print(f"[텔레그램 오류] {e}")
+        st.error(f"텔레그램 전송 중 예외 발생: {e}")
 
 def send_telegram_photo(photo_path):
     """ 저장된 차트 이미지를 보냅니다. """
@@ -488,9 +496,17 @@ def send_telegram_photo(photo_path):
     try:
         url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
         with open(photo_path, 'rb') as f:
-            requests.post(url, data={'chat_id': chat_id}, files={'photo': f})
+            res = requests.post(url, data={'chat_id': chat_id}, files={'photo': f})
+            
+        if res.status_code != 200:
+            print(f"[텔레그램 이미지 오류] Status: {res.status_code}, Response: {res.text}")
+            st.error(f"이미지 전송 실패 (Code {res.status_code}): {res.text}")
+        else:
+            print("[텔레그램] 이미지 전송 성공")
+            
     except Exception as e:
         print(f"[이미지 전송 오류] {e}")
+        st.error(f"이미지 전송 중 예외 발생: {e}")
 
 # =============================================================================
 # Main
