@@ -4,45 +4,38 @@ import requests
 import json
 import time
 import io
-import os # 파일 확인용
+import os 
 import numpy as np
 import FinanceDataReader as fdr
 import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm # 폰트 관리
-import streamlit as st
+import matplotlib.font_manager as fm 
 
 # -----------------------------------------------------------
-# [한글 폰트 자동 설정] (koreanize_matplotlib 대체)
+# [한글 폰트 자동 설정]
 # -----------------------------------------------------------
 @st.cache_resource
 def install_korean_font():
-    # 폰트 파일이 없으면 다운로드 (나눔고딕)
     font_path = "NanumGothic.ttf"
     if not os.path.exists(font_path):
         url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf"
         with open(font_path, "wb") as f:
             f.write(requests.get(url).content)
     
-    # 폰트 등록
     fm.fontManager.addfont(font_path)
     plt.rc('font', family='NanumGothic')
-    plt.rcParams['axes.unicode_minus'] = False # 마이너스 기호 깨짐 방지
+    plt.rcParams['axes.unicode_minus'] = False 
 
-# 폰트 설정 실행
 install_korean_font()
 
 # -----------------------------------------------------------
-# [설정] API Key (오직 Streamlit Secrets에서만 가져옴)
+# [설정] API Key (Streamlit Secrets에서 가져옴)
 # -----------------------------------------------------------
-
 try:
     APP_KEY = st.secrets["APP_KEY"]
     APP_SECRET = st.secrets["APP_SECRET"]
 except:
-# Secrets가 없으면 경고 메시지를 띄우고 앱을 중단합니다.
-    st.error("🚨 API 키가 설정되지 않았습니다!")
-    st.info("Streamlit Cloud의 [Settings] -> [Secrets] 메뉴에 키를 입력해주세요.")
-    st.stop() # 더 이상 실행하지 않음
+    st.error("🚨 API 키가 설정되지 않았습니다! [Settings] -> [Secrets]에 키를 입력해주세요.")
+    st.stop()
 
 BASE_URL = "https://openapi.koreainvestment.com:9443"
 
@@ -91,12 +84,10 @@ def get_stock_data(stock_code, access_token):
     except: return None
 
 def get_quarterly_financials_from_naver(stock_code):
-    """ 네이버 증권 재무제표 크롤링 """
     try:
         url = f"https://finance.naver.com/item/main.naver?code={stock_code}"
         headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url, headers=headers)
-        # 인코딩 처리 강화
         try:
             dfs = pd.read_html(io.StringIO(res.text), encoding='euc-kr')
         except:
@@ -105,12 +96,11 @@ def get_quarterly_financials_from_naver(stock_code):
         fin_df = None
         for df in dfs:
             if not df.empty:
-                # 데이터프레임 값을 문자열로 변환하여 검색
-                df_str = df.astype(str)
-                if '매출액' in df_str.iloc[:, 0].values and '영업이익' in df_str.iloc[:, 0].values:
+                col_vals = df.iloc[:, 0].astype(str).values
+                if any('EPS(원)' in val for val in col_vals):
                     fin_df = df
                     break
-                
+        
         if fin_df is None: return None
         
         fin_df = fin_df.set_index(fin_df.columns[0])
@@ -216,13 +206,11 @@ def analyze_eps_trend(quarterly_data):
         eps_list = quarterly_data['eps']
         if len(eps_list) < 3: return 0, "데이터 부족"
 
-        # 추세 계산 (기울기)
         x = np.arange(len(eps_list))
         slope = np.polyfit(x, eps_list, 1)[0]
         avg_eps = np.mean(eps_list)
         trend_strength = (slope / avg_eps) if avg_eps > 0 else 0
 
-        # QoQ
         qoq_list = []
         for i in range(1, len(eps_list)):
             prev = eps_list[i-1]
@@ -239,6 +227,36 @@ def analyze_eps_trend(quarterly_data):
         
         return score, msg
     except: return 0, "분석 실패"
+
+def get_earnings_momentum(stock_code):
+    try:
+        url = f"https://finance.naver.com/item/main.naver?code={stock_code}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers)
+        try:
+            dfs = pd.read_html(io.StringIO(res.text), encoding='euc-kr')
+        except:
+            dfs = pd.read_html(io.StringIO(res.content.decode('euc-kr', 'replace')))
+        
+        trend_df = None
+        for df in dfs:
+            if '현재' in str(df.columns) and '1개월전' in str(df.columns):
+                trend_df = df; break
+        
+        if trend_df is None: return False, "데이터 없음"
+        trend_df = trend_df.set_index(trend_df.columns[0])
+        
+        target_row = None
+        for idx in trend_df.index:
+            if 'EPS' in str(idx): target_row = idx; break
+            
+        if target_row:
+            cur = float(str(trend_df.loc[target_row, '현재']).replace(',',''))
+            prev = float(str(trend_df.loc[target_row, '1개월전']).replace(',',''))
+            return (cur > prev), "이익전망 상향중" if cur > prev else "이익전망 하향/횡보"
+            
+        return False, "데이터 없음"
+    except: return False, "분석 실패"
 
 def get_naver_financial_info(stock_code, stock_name=""):
     try:
@@ -302,45 +320,12 @@ def get_naver_financial_info(stock_code, stock_name=""):
         return consensus_eps, my_hist_per, sector_per, roe_val
     except: return None, 12.0, 12.0, 0.0
 
-def get_earnings_momentum(stock_code):
-    try:
-        url = f"https://finance.naver.com/item/main.naver?code={stock_code}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        res = requests.get(url, headers=headers)
-        dfs = pd.read_html(io.StringIO(res.text), encoding='euc-kr')
-        
-        trend_df = None
-        for df in dfs:
-            if '현재' in str(df.columns) and '1개월전' in str(df.columns):
-                trend_df = df; break
-        
-        if trend_df is None: return False, "데이터 없음"
-        trend_df = trend_df.set_index(trend_df.columns[0])
-        
-        target_row = None
-        for idx in trend_df.index:
-            if 'EPS' in str(idx): target_row = idx; break
-            
-        if target_row:
-            cur = float(str(trend_df.loc[target_row, '현재']).replace(',',''))
-            prev = float(str(trend_df.loc[target_row, '1개월전']).replace(',',''))
-            return (cur > prev), "이익전망 상향중" if cur > prev else "이익전망 하향/횡보"
-            
-        return False, "데이터 없음"
-    except: return False, "분석 실패"
-
 def predict_eps_smart(stock_code, stock_name, current_eps, access_token):
     try:
-        # 1. 분기 실적 (네이버 크롤링)
         quarterly_data = get_quarterly_financials_from_naver(stock_code)
-        
-        # 2. 컨센서스 (네이버)
         naver_eps, _, _, _ = get_naver_financial_info(stock_code, stock_name)
-        
-        # 3. 추세 점수
         trend_score, trend_msg = analyze_eps_trend(quarterly_data)
         
-        # 4. 종합 판단
         if naver_eps and naver_eps > 0:
             if current_eps > 0:
                 deviation = abs(naver_eps - current_eps) / current_eps
@@ -350,7 +335,6 @@ def predict_eps_smart(stock_code, stock_name, current_eps, access_token):
                     blended = (naver_eps * 0.6) + (current_eps * 0.4)
                     return blended, 65, "네이버 60% + 현재 40% 혼합"
                 else:
-                    # 너무 차이나면 보수적으로 현재 실적 사용하되, 추세가 좋으면 가산
                     if trend_score > 50:
                         return current_eps * 1.1, 55, "편차 과대 → 현재실적+성장세 반영"
                     else:
@@ -359,11 +343,9 @@ def predict_eps_smart(stock_code, stock_name, current_eps, access_token):
                 return naver_eps, 70, "적자탈출 예상 (컨센서스 채택)"
         
         return current_eps, 50, "컨센서스 없음 (현재실적 유지)"
-        
     except: return current_eps, 40, "예측 오류"
 
 def calculate_target_per_advanced(stock_code, stock_name, base_per, access_token):
-    # 업종별 CAP 등 기존 로직 유지
     sector_caps = {
         '반도체': 18, 'SK하이닉스': 18, '삼성전자': 18,
         '자동차': 10, '현대차': 10, '기아': 10,
@@ -373,8 +355,6 @@ def calculate_target_per_advanced(stock_code, stock_name, base_per, access_token
     }
     
     adjusted_per = base_per
-    
-    # 키워드 매칭
     for k, cap in sector_caps.items():
         if k in stock_name:
             if adjusted_per > cap: adjusted_per = cap
@@ -402,7 +382,6 @@ def analyze_stock_item(code, name, token, is_bull_market):
         used_sector_per = sector_per if sector_per > 0 else my_hist_per
         base_per = (my_hist_per * 0.6) + (used_sector_per * 0.4)
         
-        # ROE 가중치
         if roe >= 20: base_per *= 1.3
         elif roe >= 15: base_per *= 1.15
         elif roe < 5: base_per *= 0.8
@@ -413,15 +392,19 @@ def analyze_stock_item(code, name, token, is_bull_market):
         price = stock_info['price']
         upside = ((target_price - price) / price) * 100 if price > 0 else 0
 
-        # 하락장 보수적 기준
         if not is_bull_market and upside < 40: return None
 
-        # 의견
         if upside >= 30 and supply_score >= 2 and rsi < 70: signal = "Strong Buy (★★★)"
         elif upside >= 30: signal = "Strong Buy (★)"
         elif upside >= 15: signal = "Buy"
         elif upside >= 0: signal = "Hold"
         else: signal = "Sell"
+
+        if not is_bull_trend:
+            if rsi < 30: signal = "Buy (과매도)" 
+            elif "Buy" in signal: signal = "Hold (하락세)"
+        
+        if rsi > 70 and "Buy" in signal: signal = "Wait (과열)"
 
         return {
             "종목명": name,
@@ -438,12 +421,10 @@ def analyze_stock_item(code, name, token, is_bull_market):
     except: return None
 
 def check_market_trend():
-    # 간단히 KOSPI 2000 이상이면 상승장으로 가정 (실제로는 지수 조회 필요)
     return True, "상승장 (가정)"
 
 def get_fair_value_chart_figure(df):
     try:
-        # Streamlit에서는 기본 폰트 사용 (한글 깨짐 방지는 koreanize_matplotlib가 처리)
         chart_df = df.head(10).copy()
         names = chart_df['종목명'].tolist()
         prices = chart_df['현재가'].tolist()
@@ -464,48 +445,40 @@ def get_fair_value_chart_figure(df):
     except: return None
 
 # -----------------------------------------------------------
-# [텔레그램 전송 기능]
+# [텔레그램 전송 함수] (Secrets에서 키 가져오기)
 # -----------------------------------------------------------
 def send_telegram_message(message):
-    """ 텍스트 메시지를 보냅니다. """
-    # 사용자별 봇 설정을 위해 st.secrets 사용 권장하나, 여기서는 하드코딩된 값 사용
-    bot_token = "8297423754:AAHiYrE2XenVrBBwbQ_azWZmX0VI4abZOaA"
-    chat_id = "34839919"
-    
     try:
+        # secrets에 TELEGRAM_TOKEN, TELEGRAM_CHAT_ID 가 있다고 가정
+        # 없으면 에러 방지를 위해 pass
+        if "TELEGRAM_TOKEN" not in st.secrets or "TELEGRAM_CHAT_ID" not in st.secrets:
+            return 
+            
+        bot_token = st.secrets["TELEGRAM_TOKEN"]
+        chat_id = st.secrets["TELEGRAM_CHAT_ID"]
+        
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         data = {'chat_id': chat_id, 'text': message}
-        res = requests.post(url, data=data)
-        
-        if res.status_code != 200:
-            print(f"[텔레그램 오류] Status: {res.status_code}, Response: {res.text}")
-            st.error(f"텔레그램 전송 실패 (Code {res.status_code}): {res.text}")
-        else:
-            print("[텔레그램] 메시지 전송 성공")
-            
-    except Exception as e:
-        print(f"[텔레그램 오류] {e}")
-        st.error(f"텔레그램 전송 중 예외 발생: {e}")
+        requests.post(url, data=data)
+    except:
+        pass
 
-def send_telegram_photo(photo_path):
-    """ 저장된 차트 이미지를 보냅니다. """
-    bot_token = "8297423754:AAHiYrE2XenVrBBwbQ_azWZmX0VI4abZOaA"
-    chat_id = "34839919"
-    
+def send_telegram_photo(fig):
     try:
+        if "TELEGRAM_TOKEN" not in st.secrets or "TELEGRAM_CHAT_ID" not in st.secrets:
+            return 
+
+        bot_token = st.secrets["TELEGRAM_TOKEN"]
+        chat_id = st.secrets["TELEGRAM_CHAT_ID"]
+        
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png')
+        buf.seek(0)
+        
         url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-        with open(photo_path, 'rb') as f:
-            res = requests.post(url, data={'chat_id': chat_id}, files={'photo': f})
-            
-        if res.status_code != 200:
-            print(f"[텔레그램 이미지 오류] Status: {res.status_code}, Response: {res.text}")
-            st.error(f"이미지 전송 실패 (Code {res.status_code}): {res.text}")
-        else:
-            print("[텔레그램] 이미지 전송 성공")
-            
-    except Exception as e:
-        print(f"[이미지 전송 오류] {e}")
-        st.error(f"이미지 전송 중 예외 발생: {e}")
+        requests.post(url, data={'chat_id': chat_id}, files={'photo': buf})
+    except:
+        pass
 
 # =============================================================================
 # Main
@@ -516,8 +489,14 @@ def main():
     
     with st.sidebar:
         st.header("Settings")
-        top_n = st.slider("분석 종목 수", 10, 100, 20)
-        use_telegram = st.checkbox("텔레그램 알림 받기", value=True)
+        # [수정됨] 최대값 200으로 증가
+        top_n = st.sidebar.number_input(
+            "분석할 종목 수 (Top N)", 
+            min_value=10, 
+            max_value=200, 
+            value=50, 
+            step=10
+        )
         if st.button("🚀 분석 시작"):
             st.session_state['run_analysis'] = True
 
@@ -553,28 +532,27 @@ def main():
             fig = get_fair_value_chart_figure(df)
             if fig: st.pyplot(fig)
             
-            # 텔레그램 전송
-            if use_telegram:
-                st.info("텔레그램으로 결과 전송 중...")
-                try:
-                    msg_text = f"🚀 [AI 주식비서] 분석 완료!\n총 {len(results)}개 유망 종목 발견\n\n"
-                    # 상위 5개만 텍스트로 요약
-                    for i, r in enumerate(results[:5]):
-                        emoji = "🥇" if i==0 else ("🥈" if i==1 else "🥉" if i==2 else "🔹")
-                        msg_text += f"{emoji} {r['종목명']} ({r['의견']})\n   목표가:{r['적정주가']:,}원 (괴리율:{r['괴리율(%)']}%)\n"
-                    
-                    send_telegram_message(msg_text)
-                    
-                    if fig:
-                        img_path = "chart_temp.png"
-                        fig.savefig(img_path)
-                        send_telegram_photo(img_path)
-                        st.success("텔레그램 전송 완료!")
-                except Exception as e:
-                    st.error(f"텔레그램 전송 실패: {e}")
+            # -------------------------------------------------------
+            # [수정됨] 텔레그램 전송 로직 (Top 10 전송)
+            # -------------------------------------------------------
+            with st.spinner("텔레그램 전송 중..."):
+                top10 = df.head(10) # 상위 10개
+                msg = f"📊 [AI 주식비서] 오늘의 Top 10 추천\n({time.strftime('%Y-%m-%d')})\n\n"
+                
+                for idx, row in top10.iterrows():
+                    icon = "🔥" if "Strong" in row['의견'] else "✅"
+                    msg += f"{icon} {row['종목명']} ({row['의견']})\n"
+                    msg += f"   └ 괴리율: {row['괴리율(%)']}%\n"
+                    msg += f"   └ 수급: {row['수급']}\n\n"
+                
+                msg += "※ 자세한 내용은 앱에서 확인하세요."
+                
+                send_telegram_message(msg)
+                if fig: send_telegram_photo(fig)
+                st.toast("텔레그램 전송 완료!", icon="🚀")
+                
         else:
             st.warning("조건에 맞는 종목이 없습니다.")
 
 if __name__ == "__main__":
     main()
-
