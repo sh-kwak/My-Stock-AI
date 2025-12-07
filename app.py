@@ -33,13 +33,17 @@ install_korean_font()
 # -----------------------------------------------------------
 # [설정] API Key (Streamlit Secrets에서 가져옴)
 # -----------------------------------------------------------
+DEFAULT_APP_KEY = "PSTmwr8yGJqGMn86dWiwRVjCeQa54QtEoskT"
+DEFAULT_APP_SECRET = "RCPnw1rZVbs3jYdKwV6/5k5Rky+LCRJgO7s2oVc8kHKGFEubiiErLhf0w73m6XMBmtfetmY2P2EKxAC4Lyw/T/00h852W8Eoy6aZ187lIIY3KojtvwL3w86bL4vfDbbEWbKK0q2A2bpW0lJzlax5C/+0f6ptedDiInhyDRP16+DulwdUH30="
+
 try:
     APP_KEY = st.secrets["APP_KEY"]
     APP_SECRET = st.secrets["APP_SECRET"]
 except:
     # Secrets가 없으면 코드 상단 변수 사용 (테스트용)
     # 실제 배포 시에는 꼭 Secrets에 넣으세요!
-    pass 
+    APP_KEY = DEFAULT_APP_KEY
+    APP_SECRET = DEFAULT_APP_SECRET
 
 BASE_URL = "https://openapi.koreainvestment.com:9443"
 
@@ -460,6 +464,34 @@ def get_fair_value_chart_figure(df):
         return fig
     except: return None
 
+# -----------------------------------------------------------
+# [텔레그램 전송 기능]
+# -----------------------------------------------------------
+def send_telegram_message(message):
+    """ 텍스트 메시지를 보냅니다. """
+    # 사용자별 봇 설정을 위해 st.secrets 사용 권장하나, 여기서는 하드코딩된 값 사용
+    bot_token = "8297423754:AAHiYrE2XenVrBBwbQ_azWZmX0VI4abZOaA"
+    chat_id = "34839919"
+    
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        data = {'chat_id': chat_id, 'text': message}
+        requests.post(url, data=data)
+    except Exception as e:
+        print(f"[텔레그램 오류] {e}")
+
+def send_telegram_photo(photo_path):
+    """ 저장된 차트 이미지를 보냅니다. """
+    bot_token = "8297423754:AAHiYrE2XenVrBBwbQ_azWZmX0VI4abZOaA"
+    chat_id = "34839919"
+    
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+        with open(photo_path, 'rb') as f:
+            requests.post(url, data={'chat_id': chat_id}, files={'photo': f})
+    except Exception as e:
+        print(f"[이미지 전송 오류] {e}")
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -470,6 +502,7 @@ def main():
     with st.sidebar:
         st.header("Settings")
         top_n = st.slider("분석 종목 수", 10, 100, 20)
+        use_telegram = st.checkbox("텔레그램 알림 받기", value=True)
         if st.button("🚀 분석 시작"):
             st.session_state['run_analysis'] = True
 
@@ -504,9 +537,28 @@ def main():
             
             fig = get_fair_value_chart_figure(df)
             if fig: st.pyplot(fig)
+            
+            # 텔레그램 전송
+            if use_telegram:
+                st.info("텔레그램으로 결과 전송 중...")
+                try:
+                    msg_text = f"🚀 [AI 주식비서] 분석 완료!\n총 {len(results)}개 유망 종목 발견\n\n"
+                    # 상위 5개만 텍스트로 요약
+                    for i, r in enumerate(results[:5]):
+                        emoji = "🥇" if i==0 else ("🥈" if i==1 else "🥉" if i==2 else "🔹")
+                        msg_text += f"{emoji} {r['종목명']} ({r['의견']})\n   목표가:{r['적정주가']:,}원 (괴리율:{r['괴리율(%)']}%)\n"
+                    
+                    send_telegram_message(msg_text)
+                    
+                    if fig:
+                        img_path = "chart_temp.png"
+                        fig.savefig(img_path)
+                        send_telegram_photo(img_path)
+                        st.success("텔레그램 전송 완료!")
+                except Exception as e:
+                    st.error(f"텔레그램 전송 실패: {e}")
         else:
             st.warning("조건에 맞는 종목이 없습니다.")
 
 if __name__ == "__main__":
     main()
-
