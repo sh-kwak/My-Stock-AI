@@ -354,17 +354,29 @@ def get_naver_financial_info(stock_code, stock_name=""):
 
 def predict_eps_smart(stock_code, stock_name, current_eps, access_token):
     """
-    [수정됨] 네이버 컨센서스 검증 강화
+    [수정됨] 네이버 컨센서스 검증 강화 + EPS 상한선 추가
     """
     try:
         quarterly_data = get_quarterly_financials_from_naver(stock_code)
         naver_eps, _, _, _ = get_naver_financial_info(stock_code, stock_name)
         trend_score, trend_msg = analyze_eps_trend(quarterly_data)
         
-        # [추가] 네이버 EPS 검증 - 현재 EPS와 10배 이상 차이나면 무시
+        # [추가 1] 네이버 EPS 절대 상한선 (업종별)
+        if naver_eps:
+            if '바이오' in stock_name or '제약' in stock_name:
+                eps_max = 50000  # 바이오는 5만원까지
+            elif '반도체' in stock_name or '하이닉스' in stock_name:
+                eps_max = 40000  # 반도체 4만원
+            else:
+                eps_max = 30000  # 일반 종목 3만원
+            
+            if naver_eps > eps_max:
+                naver_eps = None  # 상한 초과 시 무시
+        
+        # [추가 2] 네이버 EPS 검증 - 현재 EPS와 3배 이상 차이나면 무시
         if naver_eps and current_eps > 0:
             eps_ratio = naver_eps / current_eps
-            if eps_ratio < 0.1 or eps_ratio > 5.0:
+            if eps_ratio < 0.2 or eps_ratio > 3.0:  # 5배 → 3배로 강화
                 naver_eps = None  # 극단적 차이는 신뢰 안 함
         
         if naver_eps and naver_eps > 0:
@@ -426,10 +438,20 @@ def analyze_stock_item(code, name, token, is_bull_market):
             code, name, stock_info['eps'], token
         )
 
-        # [수정 1] EPS 검증 강화
+        # [수정 1] EPS 검증 강화 + 상한선 추가
         if eps_confidence < 30: return None
         if predicted_eps <= 0: return None
         if predicted_eps < 100: return None  # EPS 100원 미만 제외
+        
+        # [추가] EPS 절대 상한선 (비정상적으로 높은 값 제외)
+        if '바이오' in name or '제약' in name:
+            eps_limit = 50000
+        elif '반도체' in name or '하이닉스' in name:
+            eps_limit = 40000
+        else:
+            eps_limit = 30000
+        
+        if predicted_eps > eps_limit: return None  # 상한 초과 시 제외
 
         _, my_hist_per, sector_per, roe = get_naver_financial_info(code, name)
         
