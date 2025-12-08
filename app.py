@@ -387,6 +387,21 @@ def analyze_stock_item(code, name, token, is_bull_market):
         elif roe < 5: base_per *= 0.8
 
         final_target_per = calculate_target_per_advanced(code, name, base_per, token)
+
+        # ---------------------------------------------------------
+        # [강력한 안전장치] 절대 상한선 (Hard Cap) 적용
+        # ---------------------------------------------------------
+        # 1. 바이오(꿈을 먹는 주식)는 60배까지 봐줌
+        if '바이오' in name or '셀트리온' in name or '알테오젠' in name:
+            limit_per = 60.0
+        # 2. 그 외 일반 종목은 무조건 25배를 넘길 수 없음 (보수적 기준)
+        else:
+            limit_per = 25.0
+
+        # 목표 PER가 한도를 넘으면 강제로 깎아버림
+        if final_target_per > limit_per:
+            final_target_per = limit_per
+        # ---------------------------------------------------------
         
         target_price = predicted_eps * final_target_per
         price = stock_info['price']
@@ -556,3 +571,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
