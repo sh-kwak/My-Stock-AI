@@ -438,8 +438,8 @@ def analyze_stock_item(code, name, token, is_bull_market):
             code, name, stock_info['eps'], token
         )
 
-        # [수정 1] EPS 검증 강화 + 상한선 추가
-        if eps_confidence < 30: return None
+        # [수정 1] EPS 검증 강화 + 상한선 추가 (신뢰도 60점 이상)
+        if eps_confidence < 60: return None  # 30 → 60으로 상향
         if predicted_eps <= 0: return None
         if predicted_eps < 100: return None  # EPS 100원 미만 제외
         
@@ -464,17 +464,17 @@ def analyze_stock_item(code, name, token, is_bull_market):
 
         final_target_per = calculate_target_per_advanced(code, name, base_per, token)
 
-        # [수정 2] Hard Cap 업종별 차등 적용
+        # [수정 2] Hard Cap 업종별 차등 적용 (보수적으로 하향 조정)
         if '바이오' in name or '셀트리온' in name or '알테오젠' in name:
-            limit_per = 60.0
+            limit_per = 40.0  # 60 → 40으로 하향
         elif 'IT' in name or 'NAVER' in name or '카카오' in name or '게임' in name or '크래프톤' in name:
-            limit_per = 35.0
+            limit_per = 25.0  # 35 → 25로 하향
         elif '반도체' in name or '하이닉스' in name or '삼성전자' in name or '전자' in name:
-            limit_per = 25.0
+            limit_per = 20.0  # 25 → 20으로 하향
         elif '은행' in name or '금융' in name or 'KB' in name or '신한' in name:
-            limit_per = 12.0
+            limit_per = 10.0  # 12 → 10으로 하향
         else:
-            limit_per = 30.0  # 일반 종목 기본값 상향
+            limit_per = 20.0  # 일반 종목 30 → 20으로 하향
 
         if final_target_per > limit_per:
             final_target_per = limit_per
@@ -487,22 +487,23 @@ def analyze_stock_item(code, name, token, is_bull_market):
         
         upside = ((target_price - price) / price) * 100 if price > 0 else 0
 
-        # [수정 4] 극단적 괴리율 필터링
-        if upside > 300 or upside < -90: return None
+        # [수정 4] 괴리율 필터링 (10% ~ 80%로 제한)
+        if upside < 10 or upside > 80: return None  # 상한 300 → 80, 하한 -90 → 10으로 변경
 
-        if not is_bull_market and upside < 40: return None
+        # 하락장 필터는 이미 위의 10% 하한으로 처리됨
 
-        if upside >= 30 and supply_score >= 2 and rsi < 70: signal = "Strong Buy (★★★)"
-        elif upside >= 30: signal = "Strong Buy (★)"
-        elif upside >= 15: signal = "Buy"
-        elif upside >= 0: signal = "Hold"
-        else: signal = "Sell"
+        # [수정] RSI 70 이상이면 매수 신호 제외
+        if rsi > 70: return None  # RSI 과열 종목 제외
+        
+        if upside >= 50 and supply_score >= 2 and rsi < 60: signal = "Strong Buy (★★★)"
+        elif upside >= 40: signal = "Strong Buy (★)"
+        elif upside >= 25: signal = "Buy"
+        elif upside >= 10: signal = "Hold"
+        else: return None  # 10% 미만은 제외
 
         if not is_bull_trend:
             if rsi < 30: signal = "Buy (과매도)" 
             elif "Buy" in signal: signal = "Hold (하락세)"
-        
-        if rsi > 70 and "Buy" in signal: signal = "Wait (과열)"
 
         # [수정 5] 발굴점수 개선 (음수는 0점 처리)
         discovery_score = int(eps_confidence) * max(upside / 100, 0)
@@ -586,9 +587,9 @@ def send_telegram_photo(fig):
 # =============================================================================
 def main():
     st.set_page_config(page_title="AI 주식비서", page_icon="📈", layout="wide")
-    st.title("📈 나만의 AI 주식 비서 (개선판)")
+    st.title("📈 나만의 AI 주식 비서 (엄격 모드)")
     
-    st.info("✨ **업데이트 내역**: EPS 검증 강화, 업종별 PER 차등 적용, 극단적 괴리율 필터링")
+    st.info("✨ **Ver 2.0 업데이트**: 신뢰도 60점 이상 | 괴리율 10~80% | RSI 과열 제외 | 보수적 PER 적용")
     
     # session_state 초기화
     if 'analysis_results' not in st.session_state:
@@ -609,10 +610,11 @@ def main():
         )
         
         st.markdown("---")
-        st.markdown("### 📊 필터 기준")
+        st.markdown("### 📊 필터 기준 (엄격 모드)")
         st.text("• EPS 100원 이상")
-        st.text("• 신뢰도 30점 이상")
-        st.text("• 괴리율 -90% ~ 300%")
+        st.text("• 신뢰도 60점 이상 ⬆")
+        st.text("• 괴리율 10% ~ 80% ⬇")
+        st.text("• RSI 70 이하만 매수")
         st.text("• 적정가 > 현재가 10%")
         
         if st.button("🚀 분석 시작", type="primary"):
@@ -756,11 +758,16 @@ def main():
         else:
             st.warning("⚠️ 조건에 맞는 종목이 없습니다. 필터 기준을 완화해보세요.")
             st.info("""
-            **필터가 너무 엄격할 수 있습니다:**
-            - EPS 100원 미만 제외
-            - 신뢰도 30점 미만 제외
-            - 괴리율 -90% ~ 300% 범위
+            **현재 필터 기준 (엄격 모드):**
+            - EPS 100원 이상
+            - 신뢰도 60점 이상 (매우 높음)
+            - 괴리율 10% ~ 80% (보수적)
+            - RSI 70 이하 (과열 종목 제외)
             - 적정주가가 현재가의 10% 미만 제외
+            
+            💡 **조건을 완화하려면 코드에서 다음 값을 조정하세요:**
+            - `eps_confidence < 60` → `< 50`로 변경
+            - `upside > 80` → `> 100`으로 변경
             """)
 
 if __name__ == "__main__":
