@@ -174,31 +174,73 @@ def get_technical_indicators(stock_code, access_token):
             
         return ma20, is_bull, rsi_val
     except: return None, False, 50.0
-
+# =============================================================================
+# [수정됨] 수급 분석 함수 (콤마 제거 버그 수정)
+# =============================================================================
 def get_supply_score(stock_code, access_token):
+    """
+    KIS API를 통해 최근 5일간 외국인/기관 순매수 추이를 분석합니다.
+    (콤마가 포함된 문자열 데이터를 안전하게 숫자로 변환합니다)
+    """
     url = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor"
     headers = {
-        "content-type": "application/json", "authorization": f"Bearer {access_token}",
-        "appkey": APP_KEY, "appsecret": APP_SECRET, "tr_id": "FHKST01010900"
+        "content-type": "application/json",
+        "authorization": f"Bearer {access_token}",
+        "appkey": APP_KEY,
+        "appsecret": APP_SECRET,
+        "tr_id": "FHKST01010900"
     }
-    params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": stock_code}
+    params = {
+        "fid_cond_mrkt_div_code": "J",
+        "fid_input_iscd": stock_code
+    }
+    
     try:
         res = requests.get(url, headers=headers, params=params)
         data = res.json()
+        
         if data['rt_cd'] != '0': return 0, "-"
         
-        daily = data['output'][:5]
-        inst, frgn = 0, 0
-        for row in daily:
-            if int(row.get('frgn_ntby_qty', 0)) > 0: frgn += 1
-            if int(row.get('orgn_ntby_qty', 0)) > 0: inst += 1
-            
+        daily_data = data.get('output', [])
+        # 데이터가 없으면 리턴
+        if not daily_data: return 0, "데이터없음"
+
+        # 최근 5일치만 확인
+        daily_data = daily_data[:5]
+        
+        inst_buy_count = 0
+        for_buy_count = 0
+        
+        for row in daily_data:
+            try:
+                # [핵심 수정] 콤마(,) 제거 후 정수로 변환
+                frgn_qty = int(str(row.get('frgn_ntby_qty', '0')).replace(',', ''))
+                orgn_qty = int(str(row.get('orgn_ntby_qty', '0')).replace(',', ''))
+                
+                if frgn_qty > 0: for_buy_count += 1
+                if orgn_qty > 0: inst_buy_count += 1
+            except:
+                continue # 변환 실패 시 해당 일자 패스
+                
         score = 0
-        msg = []
-        if frgn >= 3: score+=1; msg.append(f"외인{frgn}일")
-        if inst >= 3: score+=1; msg.append(f"기관{inst}일")
-        return score, "/".join(msg) if msg else "수급약함"
-    except: return 0, "에러"
+        msg_parts = []
+        
+        # 3일 이상 순매수면 점수 부여
+        if for_buy_count >= 3:
+            score += 1
+            msg_parts.append(f"외인{for_buy_count}일")
+            
+        if inst_buy_count >= 3:
+            score += 1
+            msg_parts.append(f"기관{inst_buy_count}일")
+            
+        return score, "/".join(msg_parts) if msg_parts else "수급약함"
+        
+    except Exception as e:
+        # 에러 발생 시 콘솔에 원인 출력 (디버깅용)
+        print(f"[수급분석 에러] {stock_code}: {e}")
+        return 0, "에러"
+
 
 def analyze_eps_trend(quarterly_data):
     try:
@@ -571,4 +613,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
