@@ -284,6 +284,113 @@ def get_supply_score(stock_code, access_token):
     except:
         return 0, "에러"
 
+def get_analyst_target_price(stock_code):
+    """
+    [A등급 검증용] 증권사 컨센서스 목표가 크롤링
+    네이버 증권에서 애널리스트 목표가 평균을 가져옴
+    """
+    try:
+        # 투자의견 페이지에서 목표가 가져오기
+        url = f"https://finance.naver.com/item/coinfo.naver?code={stock_code}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers)
+        
+        try:
+            dfs = pd.read_html(io.StringIO(res.text), encoding='euc-kr')
+        except:
+            dfs = pd.read_html(io.StringIO(res.content.decode('euc-kr', 'replace')))
+        
+        # 목표가 정보가 있는 테이블 찾기
+        for df in dfs:
+            df_str = df.astype(str)
+            # "목표가" 또는 "목표주가" 키워드 검색
+            if '목표' in str(df_str.values):
+                for col in df.columns:
+                    for idx in df.index:
+                        val = df.loc[idx, col]
+                        if pd.notna(val):
+                            try:
+                                # 숫자만 추출
+                                val_str = str(val).replace(',', '').replace('원', '')
+                                if val_str.isdigit() and int(val_str) > 1000:
+                                    return int(val_str)
+                            except:
+                                continue
+        
+        # 대안: 메인 페이지에서 추정치 확인
+        url2 = f"https://finance.naver.com/item/main.naver?code={stock_code}"
+        res2 = requests.get(url2, headers=headers)
+        
+        try:
+            dfs2 = pd.read_html(io.StringIO(res2.text), encoding='euc-kr')
+        except:
+            dfs2 = pd.read_html(io.StringIO(res2.content.decode('euc-kr', 'replace')))
+        
+        # 컨센서스 테이블 확인
+        for df in dfs2:
+            if '컨센서스' in str(df) or '목표' in str(df):
+                # 목표가로 보이는 큰 숫자 찾기
+                for val in df.values.flatten():
+                    if pd.notna(val):
+                        try:
+                            val_str = str(val).replace(',', '').replace('원', '')
+                            if val_str.isdigit():
+                                num = int(val_str)
+                                if 1000 < num < 10000000:  # 1천원 ~ 1천만원
+                                    return num
+                        except:
+                            continue
+        
+        return None
+    except:
+        return None
+
+def verify_a_grade_stock(stock_code, stock_name, our_target, current_price):
+    """
+    [A등급 검증] 우리 적정가 vs 증권사 목표가 비교
+    
+    Returns:
+        dict: {
+            'analyst_target': 증권사 목표가,
+            'our_target': 우리 적정가,
+            'deviation': 괴리율(%),
+            'reliability': 신뢰도 등급
+        }
+    """
+    analyst_target = get_analyst_target_price(stock_code)
+    
+    if analyst_target is None:
+        return {
+            'analyst_target': None,
+            'our_target': our_target,
+            'deviation': None,
+            'reliability': "검증불가",
+            'message': "증권사 목표가 없음"
+        }
+    
+    # 괴리율 계산 (우리 vs 증권사)
+    deviation = ((our_target - analyst_target) / analyst_target) * 100
+    
+    # 신뢰도 등급
+    abs_dev = abs(deviation)
+    if abs_dev <= 15:
+        reliability = "★★★높음"
+        message = f"목표가 일치 (차이 {deviation:+.1f}%)"
+    elif abs_dev <= 30:
+        reliability = "★★보통"
+        message = f"목표가 유사 (차이 {deviation:+.1f}%)"
+    else:
+        reliability = "★낮음"
+        message = f"목표가 괴리 (차이 {deviation:+.1f}%)"
+    
+    return {
+        'analyst_target': analyst_target,
+        'our_target': our_target,
+        'deviation': round(deviation, 1),
+        'reliability': reliability,
+        'message': message
+    }
+
 # =============================================================================
 # [Phase 2] 밸류에이션 엔진
 # =============================================================================
@@ -900,8 +1007,7 @@ def main():
             
             st.markdown("---")
             
-            # 탭 구성
-            tab1, tab2, tab3 = st.tabs(["📊 분석 결과", "📈 차트", "🔬 백테스트"])
+            tab1, tab2, tab3 = st.tabs(["📊 분석 결과", "📈 차트", "� A등급 검증"])
             
             with tab1:
                 st.subheader("🏆 Top Picks (밸류점수 순)")
@@ -929,14 +1035,64 @@ def main():
                     plt.close(fig)
             
             with tab3:
-                st.subheader("🔬 간이 백테스트 (과거 3개월)")
-                st.info("선별된 상위 10개 종목의 3개월 전 대비 수익률 (참고용)")
+                st.subheader("� A등급 종목 자체 검증")
+                st.info("A등급 종목의 적정가를 증권사 컨센서스 목표가와 비교하여 신뢰도를 검증합니다.")
                 
-                if st.button("백테스트 실행", key="backtest"):
-                    with st.spinner("백테스팅 중..."):
-                        stock_codes_names = [(r['종목명'], r['종목명']) for r in results[:10]]
-                        # 실제로는 코드가 필요하지만, 이름으로 대체
-                        st.warning("⚠️ 백테스트는 현재 선별된 종목 기준이며, 과거 추천 이력 기반이 아닙니다.")
+                # A등급 종목 필터
+                a_grade_df = df[df['투자등급'] == 'A']
+                
+                if len(a_grade_df) == 0:
+                    st.warning("⚠️ A등급 종목이 없습니다.")
+                else:
+                    if st.button("🔍 A등급 검증 실행", key="verify_a_grade", type="primary"):
+                        with st.spinner("증권사 목표가 조회 중..."):
+                            verification_results = []
+                            
+                            # 종목코드 가져오기 위해 stock_list 다시 가져오기
+                            stock_list = get_top_stocks(200)
+                            stock_code_map = {name: code for code, name in stock_list}
+                            
+                            for _, row in a_grade_df.iterrows():
+                                stock_name = row['종목명']
+                                stock_code = stock_code_map.get(stock_name)
+                                
+                                if stock_code:
+                                    result = verify_a_grade_stock(
+                                        stock_code, 
+                                        stock_name, 
+                                        row['종합적정가'], 
+                                        row['현재가']
+                                    )
+                                    result['종목명'] = stock_name
+                                    result['현재가'] = row['현재가']
+                                    result['우리적정가'] = row['종합적정가']
+                                    result['우리괴리율'] = row['괴리율(%)']
+                                    verification_results.append(result)
+                                    time.sleep(0.3)  # 크롤링 딜레이
+                            
+                            if verification_results:
+                                st.markdown("---")
+                                st.subheader("📋 검증 결과")
+                                
+                                for v in verification_results:
+                                    with st.expander(f"**{v['종목명']}** - {v['reliability']}", expanded=True):
+                                        col1, col2, col3 = st.columns(3)
+                                        with col1:
+                                            st.metric("현재가", f"{v['현재가']:,}원")
+                                        with col2:
+                                            st.metric("우리 적정가", f"{v['우리적정가']:,}원", f"+{v['우리괴리율']:.1f}%")
+                                        with col3:
+                                            if v['analyst_target']:
+                                                st.metric("증권사 목표가", f"{v['analyst_target']:,}원")
+                                            else:
+                                                st.metric("증권사 목표가", "없음")
+                                        
+                                        if v['analyst_target']:
+                                            st.success(f"✅ {v['message']}")
+                                        else:
+                                            st.warning(f"⚠️ {v['message']}")
+                            else:
+                                st.error("검증 결과를 가져올 수 없습니다.")
             
             # 텔레그램
             st.markdown("---")
