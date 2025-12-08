@@ -317,33 +317,30 @@ def calculate_pbr_valuation(bps, target_pbr):
 
 def calculate_dcf_simple(eps, growth_rate, discount_rate=0.08):
     """
-    간이 DCF 모델 (Gordon Growth Model 변형)
-    적정가 = EPS × (1 + g) / (r - g)
-    
-    - eps: 현재 EPS
-    - growth_rate: 연간 성장률 (0.1 = 10%)
-    - discount_rate: 할인율 (기본 8%)
+    [수정됨] 간이 DCF 모델
+    - 영구성장률: 3% → 1.5%로 하향 (한국 저성장 반영)
+    - 성장률 제한: -3% ~ 10%로 보수적 조정
     """
     if eps <= 0:
         return None
     
-    # 성장률 상한/하한 제한
-    g = max(-0.05, min(growth_rate / 100, 0.15))  # -5% ~ 15%
+    # [수정] 성장률 상한/하한 더 보수적으로 제한
+    g = max(-0.03, min(growth_rate / 100, 0.10))  # -3% ~ 10%
     r = discount_rate
     
-    if r <= g:  # 할인율이 성장률보다 낮으면 계산 불가
+    if r <= g:
         return None
     
     try:
-        # 향후 5년 EPS 합계의 현재가치 + 잔존가치
+        # 향후 5년 EPS 합계의 현재가치
         pv_sum = 0
         future_eps = eps
         for year in range(1, 6):
             future_eps *= (1 + g)
             pv_sum += future_eps / ((1 + r) ** year)
         
-        # 5년 후 잔존가치 (영구성장률 3%)
-        terminal_growth = 0.03
+        # [수정] 영구성장률 3% → 1.5%로 하향 (한국 저성장 반영)
+        terminal_growth = 0.015  # 1.5%
         terminal_value = future_eps * (1 + terminal_growth) / (r - terminal_growth)
         pv_terminal = terminal_value / ((1 + r) ** 5)
         
@@ -351,45 +348,58 @@ def calculate_dcf_simple(eps, growth_rate, discount_rate=0.08):
     except:
         return None
 
+def is_financial_sector(stock_name):
+    """금융업종 여부 판단"""
+    return any(k in stock_name for k in ['은행', '금융', 'KB', '신한', '하나', '우리', '보험', '증권', '카드'])
+
 def get_sector_weights(stock_name):
     """
-    업종별 밸류에이션 가중치 조정
+    [수정됨] 업종별 밸류에이션 가중치 조정
+    - 금융주: DCF 비활성화 (PBR 중심)
     """
-    # 금융주: PBR 가중치 높임
-    if any(k in stock_name for k in ['은행', '금융', 'KB', '신한', '하나', '우리', '보험', '증권']):
-        return {'per': 0.30, 'pbr': 0.50, 'dcf': 0.20}
+    # 금융주: DCF 비활성화, PBR 중심 (금융주에 DCF는 부적합)
+    if is_financial_sector(stock_name):
+        return {'per': 0.40, 'pbr': 0.60, 'dcf': 0.00}  # DCF 0%
     
-    # 성장주: DCF 가중치 높임
+    # 성장주: DCF 가중치 높임 (단, 40%로 제한)
     if any(k in stock_name for k in ['바이오', 'IT', 'NAVER', '카카오', '게임', '크래프톤', '셀트리온']):
-        return {'per': 0.30, 'pbr': 0.20, 'dcf': 0.50}
+        return {'per': 0.35, 'pbr': 0.25, 'dcf': 0.40}
     
-    # 가치주/제조업: PER 가중치 높임
-    return {'per': 0.40, 'pbr': 0.30, 'dcf': 0.30}
+    # 가치주/제조업: PER 가중치 높임, DCF 낮춤
+    return {'per': 0.50, 'pbr': 0.30, 'dcf': 0.20}
 
 def get_target_multiples(stock_name, per_band, sector_per, roe):
     """
-    목표 PER, PBR 결정
+    [수정됨] 목표 PER, PBR 결정
+    - ROE 가중치: 덧셈 → 곱셈(할증) 방식으로 변경
+    - 할증 비율 축소 (과도한 목표 PER 방지)
     """
-    # 목표 PER: 밴드 중간값과 섹터 PER의 평균, ROE 가중치 적용
+    # 기본 목표 PER: 밴드 중간값과 섹터 PER의 가중 평균
     if per_band['position'] == 'calculated':
         base_per = (per_band['mid'] * 0.6) + (sector_per * 0.4)
     else:
         base_per = sector_per
     
-    # ROE 프리미엄/디스카운트
+    # [수정] ROE 할증: 곱셈 방식으로 변경, 할증폭 축소
     if roe >= 20:
-        base_per *= 1.2
+        roe_premium = 1.15  # +15% (기존 1.2)
     elif roe >= 15:
-        base_per *= 1.1
-    elif roe < 5:
-        base_per *= 0.7
+        roe_premium = 1.08  # +8% (기존 1.1)
+    elif roe >= 10:
+        roe_premium = 1.0   # 0%
+    elif roe >= 5:
+        roe_premium = 0.9   # -10%
+    else:
+        roe_premium = 0.7   # -30% (기존 동일)
     
-    # 업종별 PER 상한
+    base_per = base_per * roe_premium
+    
+    # 업종별 PER 상한 (보수적으로 하향 조정)
     per_caps = {
-        '바이오': 35, '셀트리온': 35, '알테오젠': 35,
-        'NAVER': 25, '카카오': 25, '크래프톤': 20,
-        '반도체': 18, '하이닉스': 18, '삼성전자': 15,
-        '은행': 8, '금융': 8, 'KB': 8,
+        '바이오': 30, '셀트리온': 30, '알테오젠': 30,  # 35 → 30
+        'NAVER': 20, '카카오': 20, '크래프톤': 18,     # 25 → 20
+        '반도체': 15, '하이닉스': 15, '삼성전자': 12,  # 18 → 15
+        '은행': 7, '금융': 7, 'KB': 7,                 # 8 → 7
     }
     
     for keyword, cap in per_caps.items():
@@ -397,52 +407,80 @@ def get_target_multiples(stock_name, per_band, sector_per, roe):
             base_per = min(base_per, cap)
             break
     else:
-        base_per = min(base_per, 18)  # 일반 종목 상한
+        base_per = min(base_per, 15)  # 일반 종목: 18 → 15
     
-    # 목표 PBR: ROE 기반
+    # 목표 PBR: ROE 기반 (보수적 조정)
     if roe >= 15:
-        target_pbr = 1.5
+        target_pbr = 1.3   # 1.5 → 1.3
     elif roe >= 10:
-        target_pbr = 1.2
+        target_pbr = 1.0   # 1.2 → 1.0
     elif roe >= 5:
-        target_pbr = 1.0
+        target_pbr = 0.8   # 1.0 → 0.8
     else:
-        target_pbr = 0.7
+        target_pbr = 0.6   # 0.7 → 0.6
     
-    # 금융주는 PBR 낮게
-    if any(k in stock_name for k in ['은행', '금융', 'KB', '신한']):
-        target_pbr = min(target_pbr, 0.6)
+    # 금융주는 PBR 더 낮게
+    if is_financial_sector(stock_name):
+        target_pbr = min(target_pbr, 0.5)
     
     return base_per, target_pbr
 
-def calculate_composite_target(per_target, pbr_target, dcf_target, weights):
+def calculate_composite_target(per_target, pbr_target, dcf_target, weights, current_price):
     """
-    복합 적정가 계산 (가중 평균)
+    [수정됨] 복합 적정가 계산
+    - DCF 상한선 추가: PER적정가의 1.5배 초과 시 제한
+    - 극단값 제거: 중간값의 2배 초과 시 제외
     """
     valid_targets = []
     valid_weights = []
     
+    # PER 기준 (기본)
     if per_target and per_target > 0:
         valid_targets.append(per_target)
         valid_weights.append(weights['per'])
     
+    # PBR
     if pbr_target and pbr_target > 0:
         valid_targets.append(pbr_target)
         valid_weights.append(weights['pbr'])
     
-    if dcf_target and dcf_target > 0:
+    # [수정] DCF 상한선: PER적정가의 1.5배로 제한
+    if dcf_target and dcf_target > 0 and weights['dcf'] > 0:
+        if per_target and per_target > 0:
+            dcf_cap = per_target * 1.5
+            dcf_target = min(dcf_target, dcf_cap)
         valid_targets.append(dcf_target)
         valid_weights.append(weights['dcf'])
     
     if not valid_targets:
         return None
     
+    # [추가] 극단값 제거: 중간값의 2배 초과하는 값 제외
+    if len(valid_targets) >= 2:
+        median_val = np.median(valid_targets)
+        filtered_targets = []
+        filtered_weights = []
+        for t, w in zip(valid_targets, valid_weights):
+            if t <= median_val * 2:  # 중간값의 2배 이하만 포함
+                filtered_targets.append(t)
+                filtered_weights.append(w)
+        if filtered_targets:
+            valid_targets = filtered_targets
+            valid_weights = filtered_weights
+    
     # 가중치 정규화
     total_weight = sum(valid_weights)
+    if total_weight == 0:
+        return None
     normalized_weights = [w / total_weight for w in valid_weights]
     
     # 가중 평균
     composite = sum(t * w for t, w in zip(valid_targets, normalized_weights))
+    
+    # [추가] 최종 안전장치: 현재가의 2배 초과 불가
+    if current_price > 0:
+        composite = min(composite, current_price * 2.0)
+    
     return composite
 
 # =============================================================================
@@ -451,10 +489,8 @@ def calculate_composite_target(per_target, pbr_target, dcf_target, weights):
 
 def is_investable(stock_info, fin_data, stock_name):
     """
-    투자 적합성 검증 - 부적합 종목 제외
-    
-    Returns:
-        (bool, str): (투자적합여부, 제외사유)
+    [수정됨] 투자 적합성 검증
+    - 금융주 부채비율 예외처리 추가
     """
     reasons = []
     
@@ -470,25 +506,29 @@ def is_investable(stock_info, fin_data, stock_name):
     if bps is None or bps <= 0:
         reasons.append("BPS없음")
     
-    # 3. ROE 검증 (5% 미만이면 수익성 부족)
+    # 3. ROE 검증 (3% 미만이면 수익성 부족)
     roe = fin_data.get('roe', 0)
-    if roe < 3:  # 너무 낮은 ROE
+    if roe < 3:
         reasons.append(f"ROE부족({roe:.1f}%)")
     
-    # 4. 부채비율 검증 (300% 초과면 재무위험)
+    # 4. [수정] 부채비율 검증 - 금융주 예외처리
     debt_ratio = fin_data.get('debt_ratio', 0)
-    if debt_ratio > 300:
-        reasons.append(f"고부채({debt_ratio:.0f}%)")
+    if is_financial_sector(stock_name):
+        # 금융주는 부채비율 필터 적용 안 함 (구조적 고부채)
+        pass
+    else:
+        if debt_ratio > 300:
+            reasons.append(f"고부채({debt_ratio:.0f}%)")
     
     # 5. PBR 극단값 검증
     pbr = stock_info.get('pbr', 0)
-    if pbr > 10:  # 너무 높은 PBR
+    if pbr > 10:
         reasons.append(f"PBR과다({pbr:.1f})")
     
     # 6. 바이오/적자 특례 (성장 기대)
     if '바이오' in stock_name or '제약' in stock_name:
         if forward_eps and forward_eps > 0:
-            reasons = [r for r in reasons if '적자' not in r]  # 적자 사유 제거
+            reasons = [r for r in reasons if '적자' not in r]
     
     if reasons:
         return False, ", ".join(reasons)
@@ -572,43 +612,53 @@ def analyze_stock_v3(code, name, token):
         # 업종별 가중치
         weights = get_sector_weights(name)
         
-        # 종합 적정가
-        composite_target = calculate_composite_target(per_target, pbr_target, dcf_target, weights)
+        # 종합 적정가 (현재가 전달하여 상한 적용)
+        price = stock_info['price']
+        composite_target = calculate_composite_target(per_target, pbr_target, dcf_target, weights, price)
         
         if composite_target is None or composite_target <= 0:
             return None
         
-        # 11. 괴리율 계산
-        price = stock_info['price']
-        upside = ((composite_target - price) / price) * 100 if price > 0 else 0
-        
-        # 괴리율 필터 (10% ~ 60%)
-        if upside < 10 or upside > 60:
+        # [수정] PER적정가가 현재가보다 낮으면 제외 (기본 필터 강화)
+        if per_target and per_target < price * 0.9:  # PER적정가가 현재가의 90% 미만이면
             return None
         
-        # 12. 투자 등급 결정
-        if upside >= 40 and supply_score >= 2 and rsi < 50:
+        # 11. 괴리율 계산
+        upside = ((composite_target - price) / price) * 100 if price > 0 else 0
+        
+        # 괴리율 필터 (10% ~ 50%) - 더 보수적으로 조정
+        if upside < 10 or upside > 50:
+            return None
+        
+        # 12. [수정] 투자 등급 결정 - A등급 조건 강화
+        # A등급: 수급 필수 + 괴리율 40%+ + RSI 양호
+        if upside >= 40 and supply_score >= 1 and rsi < 55 and is_bull_trend:
             grade = "A"
             signal = "Strong Buy (★★★)"
-        elif upside >= 30 and rsi < 60:
+        elif upside >= 30 and supply_score >= 1 and rsi < 60:
             grade = "A"
             signal = "Strong Buy (★)"
-        elif upside >= 20:
+        elif upside >= 20 and rsi < 65:
             grade = "B"
             signal = "Buy"
-        else:
+        elif upside >= 10:
             grade = "C"
             signal = "Hold"
+        else:
+            return None  # 10% 미만은 제외
         
         # 하락세 보정
-        if not is_bull_trend and "Buy" in signal:
-            signal = "Hold (하락세)"
-            grade = "C"
+        if not is_bull_trend:
+            if grade == "A":
+                grade = "B"
+                signal = "Buy (하락세 주의)"
+            elif "Buy" in signal:
+                signal = "Hold (하락세)"
         
-        # 13. 밸류 점수 (0~100)
+        # 13. 밸류 점수 (0~100) - 보수적 조정
         value_score = min(100, int(
-            (upside / 60 * 40) +                    # 괴리율 기여 40점
-            (roe / 20 * 20) +                        # ROE 기여 20점
+            (upside / 50 * 35) +                     # 괴리율 기여 35점 (50% 기준)
+            (min(roe, 20) / 20 * 25) +               # ROE 기여 25점 (20% 상한)
             (supply_score * 10) +                    # 수급 기여 20점
             ((100 - rsi) / 100 * 20)                 # RSI 기여 20점
         ))
@@ -739,9 +789,9 @@ def get_valuation_chart(df):
 # =============================================================================
 
 def main():
-    st.set_page_config(page_title="AI 주식비서 V3", page_icon="📈", layout="wide")
-    st.title("📈 AI 주식 비서 Ver 3.0")
-    st.info("✨ **복합 밸류에이션**: PER(수익) + PBR(자산) + DCF(성장) 가중 평균 | 투자 부적합 종목 자동 제외")
+    st.set_page_config(page_title="AI 주식비서 V3.1", page_icon="📈", layout="wide")
+    st.title("📈 AI 주식 비서 Ver 3.1 (보수적)")
+    st.info("✨ **전문가 피드백 반영**: DCF 영구성장률 1.5% | 금융주 부채비율 예외 | ROE 할증 방식 | A등급 수급 필수")
     
     # Session State 초기화
     if 'analysis_results' not in st.session_state:
@@ -757,23 +807,24 @@ def main():
         top_n = st.number_input("분석 종목 수", min_value=10, max_value=200, value=50, step=10)
         
         st.markdown("---")
-        st.markdown("### 📊 Ver 3.0 필터 기준")
+        st.markdown("### 📊 Ver 3.1 필터 기준")
         st.markdown("""
-        - 투자 부적합 종목 자동 제외
-        - EPS 100원 이상
-        - 신뢰도/ROE 복합 검증
-        - 괴리율 10% ~ 60%
-        - RSI 75 이하
+        - ✅ 투자 부적합 종목 자동 제외
+        - ✅ 금융주 부채비율 예외처리
+        - ✅ PER적정가 > 현재가 90%
+        - ✅ 괴리율 10% ~ 50%
+        - ✅ RSI 75 이하
+        - ✅ A등급: 수급+추세 필수
         """)
         
         st.markdown("---")
         st.markdown("### 🎯 밸류에이션 방식")
         st.markdown("""
-        | 지표 | 가중치 |
-        |------|--------|
-        | PER | 40% |
-        | PBR | 30% |
-        | DCF | 30% |
+        | 지표 | 일반 | 금융 | 성장 |
+        |------|------|------|------|
+        | PER | 50% | 40% | 35% |
+        | PBR | 30% | 60% | 25% |
+        | DCF | 20% | 0% | 40% |
         """)
         
         if st.button("🚀 분석 시작", type="primary"):
