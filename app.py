@@ -174,13 +174,10 @@ def get_technical_indicators(stock_code, access_token):
             
         return ma20, is_bull, rsi_val
     except: return None, False, 50.0
-# =============================================================================
-# [수정됨] 수급 분석 함수 (콤마 제거 버그 수정)
-# =============================================================================
+
 def get_supply_score(stock_code, access_token):
     """
     KIS API를 통해 최근 5일간 외국인/기관 순매수 추이를 분석합니다.
-    (콤마가 포함된 문자열 데이터를 안전하게 숫자로 변환합니다)
     """
     url = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor"
     headers = {
@@ -202,10 +199,8 @@ def get_supply_score(stock_code, access_token):
         if data['rt_cd'] != '0': return 0, "-"
         
         daily_data = data.get('output', [])
-        # 데이터가 없으면 리턴
         if not daily_data: return 0, "데이터없음"
 
-        # 최근 5일치만 확인
         daily_data = daily_data[:5]
         
         inst_buy_count = 0
@@ -213,19 +208,17 @@ def get_supply_score(stock_code, access_token):
         
         for row in daily_data:
             try:
-                # [핵심 수정] 콤마(,) 제거 후 정수로 변환
                 frgn_qty = int(str(row.get('frgn_ntby_qty', '0')).replace(',', ''))
                 orgn_qty = int(str(row.get('orgn_ntby_qty', '0')).replace(',', ''))
                 
                 if frgn_qty > 0: for_buy_count += 1
                 if orgn_qty > 0: inst_buy_count += 1
             except:
-                continue # 변환 실패 시 해당 일자 패스
+                continue
                 
         score = 0
         msg_parts = []
         
-        # 3일 이상 순매수면 점수 부여
         if for_buy_count >= 3:
             score += 1
             msg_parts.append(f"외인{for_buy_count}일")
@@ -237,10 +230,7 @@ def get_supply_score(stock_code, access_token):
         return score, "/".join(msg_parts) if msg_parts else "수급약함"
         
     except Exception as e:
-        # 에러 발생 시 콘솔에 원인 출력 (디버깅용)
-        print(f"[수급분석 에러] {stock_code}: {e}")
         return 0, "에러"
-
 
 def analyze_eps_trend(quarterly_data):
     try:
@@ -363,10 +353,19 @@ def get_naver_financial_info(stock_code, stock_name=""):
     except: return None, 12.0, 12.0, 0.0
 
 def predict_eps_smart(stock_code, stock_name, current_eps, access_token):
+    """
+    [수정됨] 네이버 컨센서스 검증 강화
+    """
     try:
         quarterly_data = get_quarterly_financials_from_naver(stock_code)
         naver_eps, _, _, _ = get_naver_financial_info(stock_code, stock_name)
         trend_score, trend_msg = analyze_eps_trend(quarterly_data)
+        
+        # [추가] 네이버 EPS 검증 - 현재 EPS와 10배 이상 차이나면 무시
+        if naver_eps and current_eps > 0:
+            eps_ratio = naver_eps / current_eps
+            if eps_ratio < 0.1 or eps_ratio > 5.0:
+                naver_eps = None  # 극단적 차이는 신뢰 안 함
         
         if naver_eps and naver_eps > 0:
             if current_eps > 0:
@@ -388,12 +387,19 @@ def predict_eps_smart(stock_code, stock_name, current_eps, access_token):
     except: return current_eps, 40, "예측 오류"
 
 def calculate_target_per_advanced(stock_code, stock_name, base_per, access_token):
+    """
+    [수정됨] 업종별 상한선 상향 조정
+    """
     sector_caps = {
-        '반도체': 18, 'SK하이닉스': 18, '삼성전자': 18,
-        '자동차': 10, '현대차': 10, '기아': 10,
-        '은행': 7, '금융': 7, 'KB': 7, '신한': 7,
-        '바이오': 40, '셀트리온': 40, 
-        'IT': 25, 'NAVER': 25, '카카오': 25
+        '반도체': 20, 'SK하이닉스': 20, '삼성전자': 18, '전자': 20,
+        '자동차': 12, '현대차': 12, '기아': 12,
+        '은행': 8, '금융': 8, 'KB': 8, '신한': 8,
+        '바이오': 50, '셀트리온': 50, '알테오젠': 50,
+        'IT': 30, 'NAVER': 30, '카카오': 30,
+        '게임': 25, '크래프톤': 25, '넷마블': 25,
+        '항공': 15, '대한항공': 15,
+        '건설': 10, '중공업': 12,
+        '에너지': 8, 'S-Oil': 8
     }
     
     adjusted_per = base_per
@@ -405,6 +411,9 @@ def calculate_target_per_advanced(stock_code, stock_name, base_per, access_token
     return adjusted_per
 
 def analyze_stock_item(code, name, token, is_bull_market):
+    """
+    [수정됨] 안전장치 강화
+    """
     try:
         stock_info = get_stock_data(code, token)
         if not stock_info: return None
@@ -417,7 +426,10 @@ def analyze_stock_item(code, name, token, is_bull_market):
             code, name, stock_info['eps'], token
         )
 
-        if eps_confidence < 30 or predicted_eps <= 0: return None
+        # [수정 1] EPS 검증 강화
+        if eps_confidence < 30: return None
+        if predicted_eps <= 0: return None
+        if predicted_eps < 100: return None  # EPS 100원 미만 제외
 
         _, my_hist_per, sector_per, roe = get_naver_financial_info(code, name)
         
@@ -430,24 +442,31 @@ def analyze_stock_item(code, name, token, is_bull_market):
 
         final_target_per = calculate_target_per_advanced(code, name, base_per, token)
 
-        # ---------------------------------------------------------
-        # [강력한 안전장치] 절대 상한선 (Hard Cap) 적용
-        # ---------------------------------------------------------
-        # 1. 바이오(꿈을 먹는 주식)는 60배까지 봐줌
+        # [수정 2] Hard Cap 업종별 차등 적용
         if '바이오' in name or '셀트리온' in name or '알테오젠' in name:
             limit_per = 60.0
-        # 2. 그 외 일반 종목은 무조건 25배를 넘길 수 없음 (보수적 기준)
-        else:
+        elif 'IT' in name or 'NAVER' in name or '카카오' in name or '게임' in name or '크래프톤' in name:
+            limit_per = 35.0
+        elif '반도체' in name or '하이닉스' in name or '삼성전자' in name or '전자' in name:
             limit_per = 25.0
+        elif '은행' in name or '금융' in name or 'KB' in name or '신한' in name:
+            limit_per = 12.0
+        else:
+            limit_per = 30.0  # 일반 종목 기본값 상향
 
-        # 목표 PER가 한도를 넘으면 강제로 깎아버림
         if final_target_per > limit_per:
             final_target_per = limit_per
-        # ---------------------------------------------------------
         
         target_price = predicted_eps * final_target_per
         price = stock_info['price']
+        
+        # [수정 3] 적정주가가 현재가의 10% 미만이면 제외
+        if target_price < price * 0.1: return None
+        
         upside = ((target_price - price) / price) * 100 if price > 0 else 0
+
+        # [수정 4] 극단적 괴리율 필터링
+        if upside > 300 or upside < -90: return None
 
         if not is_bull_market and upside < 40: return None
 
@@ -463,6 +482,9 @@ def analyze_stock_item(code, name, token, is_bull_market):
         
         if rsi > 70 and "Buy" in signal: signal = "Wait (과열)"
 
+        # [수정 5] 발굴점수 개선 (음수는 0점 처리)
+        discovery_score = int(eps_confidence) * max(upside / 100, 0)
+
         return {
             "종목명": name,
             "현재가": int(price),
@@ -473,7 +495,7 @@ def analyze_stock_item(code, name, token, is_bull_market):
             "RSI": round(rsi, 1),
             "EPS신뢰도": int(eps_confidence),
             "목표PER": round(final_target_per, 2),
-            "발굴점수": int(eps_confidence) * (upside / 100)
+            "발굴점수": round(discovery_score, 2)
         }
     except: return None
 
@@ -491,23 +513,23 @@ def get_fair_value_chart_figure(df):
         x = np.arange(len(names))
         width = 0.35
         
-        ax.bar(x - width/2, prices, width, label='Current', color='gray')
-        ax.bar(x + width/2, targets, width, label='Target', color='#f63366')
+        ax.bar(x - width/2, prices, width, label='현재가', color='gray')
+        ax.bar(x + width/2, targets, width, label='적정주가', color='#f63366')
         
         ax.set_xticks(x)
-        ax.set_xticklabels(names, rotation=45)
+        ax.set_xticklabels(names, rotation=45, ha='right')
+        ax.set_ylabel('주가 (원)')
+        ax.set_title('저평가 우량주 Top 10')
         ax.legend()
         plt.tight_layout()
         return fig
     except: return None
 
 # -----------------------------------------------------------
-# [텔레그램 전송 함수] (Secrets에서 키 가져오기)
+# [텔레그램 전송 함수] (수정됨 - 더 상세한 정보)
 # -----------------------------------------------------------
 def send_telegram_message(message):
     try:
-        # secrets에 TELEGRAM_TOKEN, TELEGRAM_CHAT_ID 가 있다고 가정
-        # 없으면 에러 방지를 위해 pass
         if "TELEGRAM_TOKEN" not in st.secrets or "TELEGRAM_CHAT_ID" not in st.secrets:
             return 
             
@@ -515,7 +537,7 @@ def send_telegram_message(message):
         chat_id = st.secrets["TELEGRAM_CHAT_ID"]
         
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        data = {'chat_id': chat_id, 'text': message}
+        data = {'chat_id': chat_id, 'text': message, 'parse_mode': 'HTML'}
         requests.post(url, data=data)
     except:
         pass
@@ -529,7 +551,7 @@ def send_telegram_photo(fig):
         chat_id = st.secrets["TELEGRAM_CHAT_ID"]
         
         buf = io.BytesIO()
-        fig.savefig(buf, format='png')
+        fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
         buf.seek(0)
         
         url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
@@ -542,76 +564,154 @@ def send_telegram_photo(fig):
 # =============================================================================
 def main():
     st.set_page_config(page_title="AI 주식비서", page_icon="📈", layout="wide")
-    st.title("📈 나만의 AI 주식 비서")
+    st.title("📈 나만의 AI 주식 비서 (개선판)")
+    
+    st.info("✨ **업데이트 내역**: EPS 검증 강화, 업종별 PER 차등 적용, 극단적 괴리율 필터링")
     
     with st.sidebar:
-        st.header("Settings")
-        # [수정됨] 최대값 200으로 증가
-        top_n = st.sidebar.number_input(
+        st.header("⚙️ Settings")
+        top_n = st.number_input(
             "분석할 종목 수 (Top N)", 
             min_value=10, 
             max_value=200, 
             value=50, 
             step=10
         )
-        if st.button("🚀 분석 시작"):
+        
+        st.markdown("---")
+        st.markdown("### 📊 필터 기준")
+        st.text("• EPS 100원 이상")
+        st.text("• 신뢰도 30점 이상")
+        st.text("• 괴리율 -90% ~ 300%")
+        st.text("• 적정가 > 현재가 10%")
+        
+        if st.button("🚀 분석 시작", type="primary"):
             st.session_state['run_analysis'] = True
 
     if st.session_state.get('run_analysis'):
         token = get_access_token()
         if not token:
-            st.error("API 토큰 발급 실패! 키를 확인하세요.")
+            st.error("❌ API 토큰 발급 실패! 키를 확인하세요.")
             return
 
-        status = st.empty()
-        progress = st.progress(0)
+        status_text = st.empty()
+        progress_bar = st.progress(0)
         
-        status.text("리스트 확보 중...")
+        status_text.text("📋 종목 리스트 확보 중...")
         stock_list = get_top_stocks(top_n)
+        
+        if not stock_list:
+            st.error("종목 리스트를 가져올 수 없습니다.")
+            return
         
         results = []
         for i, (code, name) in enumerate(stock_list):
-            progress.progress((i + 1) / len(stock_list))
-            status.text(f"Analyzing {name}...")
+            progress_bar.progress((i + 1) / len(stock_list))
+            status_text.text(f"🔍 분석 중... {name} ({i+1}/{len(stock_list)})")
             
             res = analyze_stock_item(code, name, token, True)
             if res: results.append(res)
             time.sleep(0.1)
             
-        status.success("완료!")
-        progress.empty()
+        status_text.success(f"✅ 분석 완료! {len(stock_list)}개 중 {len(results)}개 선별")
+        progress_bar.empty()
         
         if results:
             df = pd.DataFrame(results).sort_values(by="발굴점수", ascending=False)
-            st.subheader("🏆 Top Picks")
-            st.dataframe(df.style.background_gradient(subset=['괴리율(%)'], cmap='RdYlGn'), use_container_width=True)
             
+            # 통계 요약
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("분석 종목", f"{len(stock_list)}개")
+            with col2:
+                st.metric("선별 종목", f"{len(results)}개")
+            with col3:
+                strong_buy = len(df[df['의견'].str.contains('Strong Buy')])
+                st.metric("Strong Buy", f"{strong_buy}개")
+            with col4:
+                avg_upside = df['괴리율(%)'].mean()
+                st.metric("평균 괴리율", f"{avg_upside:.1f}%")
+            
+            st.markdown("---")
+            st.subheader("🏆 Top Picks (발굴점수 순)")
+            
+            # 데이터프레임 스타일링
+            st.dataframe(
+                df.style.background_gradient(subset=['괴리율(%)'], cmap='RdYlGn')
+                      .background_gradient(subset=['발굴점수'], cmap='Greens')
+                      .format({'현재가': '{:,}', '적정주가': '{:,}', '괴리율(%)': '{:.1f}%'}),
+                use_container_width=True,
+                height=400
+            )
+            
+            # 차트
+            st.markdown("---")
+            st.subheader("📊 현재가 vs 적정주가 비교")
             fig = get_fair_value_chart_figure(df)
-            if fig: st.pyplot(fig)
+            if fig: 
+                st.pyplot(fig)
+                plt.close(fig)
             
-            # -------------------------------------------------------
-            # [수정됨] 텔레그램 전송 로직 (Top 10 전송)
-            # -------------------------------------------------------
-            with st.spinner("텔레그램 전송 중..."):
-                top10 = df.head(10) # 상위 10개
-                msg = f"📊 [AI 주식비서] 오늘의 Top 10 추천\n({time.strftime('%Y-%m-%d')})\n\n"
-                
-                for idx, row in top10.iterrows():
-                    icon = "🔥" if "Strong" in row['의견'] else "✅"
-                    msg += f"{icon} {row['종목명']} ({row['의견']})\n"
-                    msg += f"   └ 괴리율: {row['괴리율(%)']}%\n"
-                    msg += f"   └ 수급: {row['수급']}\n\n"
-                
-                msg += "※ 자세한 내용은 앱에서 확인하세요."
-                
-                send_telegram_message(msg)
-                if fig: send_telegram_photo(fig)
-                st.toast("텔레그램 전송 완료!", icon="🚀")
+            # CSV 다운로드
+            csv = df.to_csv(index=False, encoding='utf-8-sig')
+            st.download_button(
+                label="📥 CSV 다운로드",
+                data=csv,
+                file_name=f"stock_analysis_{time.strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+            
+            # 텔레그램 전송
+            st.markdown("---")
+            col_left, col_right = st.columns([3, 1])
+            
+            with col_left:
+                st.info("💬 텔레그램 봇으로 Top 10 리포트를 전송하시겠습니까?")
+            
+            with col_right:
+                if st.button("📱 텔레그램 전송", type="primary"):
+                    with st.spinner("전송 중..."):
+                        top10 = df.head(10)
+                        
+                        # 메시지 작성
+                        msg = f"<b>📊 [AI 주식비서] 오늘의 Top 10</b>\n"
+                        msg += f"분석: {len(stock_list)}개 → 선별: {len(results)}개\n"
+                        msg += f"시간: {time.strftime('%Y-%m-%d %H:%M')}\n"
+                        msg += "="*30 + "\n\n"
+                        
+                        for idx, (i, row) in enumerate(top10.iterrows(), 1):
+                            if "Strong" in row['의견']:
+                                icon = "🔥"
+                            elif "Buy" in row['의견']:
+                                icon = "✅"
+                            else:
+                                icon = "📌"
+                            
+                            msg += f"<b>{idx}. {icon} {row['종목명']}</b>\n"
+                            msg += f"   • 현재가: {row['현재가']:,}원\n"
+                            msg += f"   • 목표가: {row['적정주가']:,}원 (↑{row['괴리율(%)']:.1f}%)\n"
+                            msg += f"   • 신뢰도: {row['EPS신뢰도']}점 | PER: {row['목표PER']}배\n"
+                            msg += f"   • 수급: {row['수급']} | RSI: {row['RSI']}\n"
+                            msg += f"   • 의견: <b>{row['의견']}</b>\n\n"
+                        
+                        msg += "="*30 + "\n"
+                        msg += "💡 자세한 내용은 앱에서 확인하세요!"
+                        
+                        send_telegram_message(msg)
+                        if fig: send_telegram_photo(fig)
+                        
+                        st.success("✅ 텔레그램 전송 완료!")
+                        st.balloons()
                 
         else:
-            st.warning("조건에 맞는 종목이 없습니다.")
+            st.warning("⚠️ 조건에 맞는 종목이 없습니다. 필터 기준을 완화해보세요.")
+            st.info("""
+            **필터가 너무 엄격할 수 있습니다:**
+            - EPS 100원 미만 제외
+            - 신뢰도 30점 미만 제외
+            - 괴리율 -90% ~ 300% 범위
+            - 적정주가가 현재가의 10% 미만 제외
+            """)
 
 if __name__ == "__main__":
     main()
-
-
