@@ -619,39 +619,38 @@ def analyze_stock_v3(code, name, token):
         if composite_target is None or composite_target <= 0:
             return None
         
-        # [수정] PER적정가가 현재가보다 낮으면 제외 (기본 필터 강화)
-        if per_target and per_target < price * 0.9:  # PER적정가가 현재가의 90% 미만이면
+        # [균형 모드] PER적정가 필터 완화 - 현재가의 70% 이상이면 허용
+        if per_target and per_target < price * 0.7:
             return None
         
         # 11. 괴리율 계산
         upside = ((composite_target - price) / price) * 100 if price > 0 else 0
         
-        # 괴리율 필터 (10% ~ 50%) - 더 보수적으로 조정
-        if upside < 10 or upside > 50:
+        # 괴리율 필터 (10% ~ 70%) - 균형 모드
+        if upside < 10 or upside > 70:
             return None
         
-        # 12. [수정] 투자 등급 결정 - A등급 조건 강화
-        # A등급: 수급 필수 + 괴리율 40%+ + RSI 양호
-        if upside >= 40 and supply_score >= 1 and rsi < 55 and is_bull_trend:
+        # 12. [균형 모드] 투자 등급 결정
+        # A등급: 수급만 필수 (추세 필수 제거)
+        if upside >= 40 and supply_score >= 1 and rsi < 60:
             grade = "A"
             signal = "Strong Buy (★★★)"
-        elif upside >= 30 and supply_score >= 1 and rsi < 60:
+        elif upside >= 30 and rsi < 65:
             grade = "A"
             signal = "Strong Buy (★)"
-        elif upside >= 20 and rsi < 65:
+        elif upside >= 20 and rsi < 70:
             grade = "B"
             signal = "Buy"
         elif upside >= 10:
             grade = "C"
             signal = "Hold"
         else:
-            return None  # 10% 미만은 제외
+            return None
         
-        # 하락세 보정
+        # 하락세 보정 (경고만, 등급 유지)
         if not is_bull_trend:
             if grade == "A":
-                grade = "B"
-                signal = "Buy (하락세 주의)"
+                signal += " (하락세 주의)"
             elif "Buy" in signal:
                 signal = "Hold (하락세)"
         
@@ -790,8 +789,8 @@ def get_valuation_chart(df):
 
 def main():
     st.set_page_config(page_title="AI 주식비서 V3.1", page_icon="📈", layout="wide")
-    st.title("📈 AI 주식 비서 Ver 3.1 (보수적)")
-    st.info("✨ **전문가 피드백 반영**: DCF 영구성장률 1.5% | 금융주 부채비율 예외 | ROE 할증 방식 | A등급 수급 필수")
+    st.title("📈 AI 주식 비서 Ver 3.1 (균형 모드)")
+    st.info("✨ **균형 모드**: PER 필터 70% | 괴리율 10~70% | A등급 수급 필수 | 전문가 피드백 반영")
     
     # Session State 초기화
     if 'analysis_results' not in st.session_state:
