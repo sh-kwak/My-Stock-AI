@@ -12,7 +12,7 @@ import matplotlib.font_manager as fm
 
 # -----------------------------------------------------------
 # [한글 폰트 자동 설정]
-# -----------------------------------------------------------
+#--------------------------------------------------------------
 @st.cache_resource
 def install_korean_font():
     font_path = "NanumGothic.ttf"
@@ -590,6 +590,12 @@ def main():
     
     st.info("✨ **업데이트 내역**: EPS 검증 강화, 업종별 PER 차등 적용, 극단적 괴리율 필터링")
     
+    # session_state 초기화
+    if 'analysis_results' not in st.session_state:
+        st.session_state['analysis_results'] = None
+    if 'analysis_metadata' not in st.session_state:
+        st.session_state['analysis_metadata'] = None
+    
     with st.sidebar:
         st.header("⚙️ Settings")
         top_n = st.number_input(
@@ -609,11 +615,15 @@ def main():
         
         if st.button("🚀 분석 시작", type="primary"):
             st.session_state['run_analysis'] = True
+            st.session_state['analysis_results'] = None  # 새 분석이므로 이전 결과 초기화
+            st.session_state['analysis_metadata'] = None
 
-    if st.session_state.get('run_analysis'):
+    # 분석 실행 (결과가 없을 때만)
+    if st.session_state.get('run_analysis') and st.session_state['analysis_results'] is None:
         token = get_access_token()
         if not token:
             st.error("❌ API 토큰 발급 실패! 키를 확인하세요.")
+            st.session_state['run_analysis'] = False
             return
 
         status_text = st.empty()
@@ -624,6 +634,7 @@ def main():
         
         if not stock_list:
             st.error("종목 리스트를 가져올 수 없습니다.")
+            st.session_state['run_analysis'] = False
             return
         
         results = []
@@ -638,15 +649,29 @@ def main():
         status_text.success(f"✅ 분석 완료! {len(stock_list)}개 중 {len(results)}개 선별")
         progress_bar.empty()
         
+        # 분석 결과 저장
+        st.session_state['analysis_results'] = results
+        st.session_state['analysis_metadata'] = {
+            'total_stocks': len(stock_list),
+            'selected_stocks': len(results),
+            'timestamp': time.strftime('%Y-%m-%d %H:%M')
+        }
+        st.session_state['run_analysis'] = False  # 분석 완료 후 플래그 해제
+    
+    # 저장된 결과 표시
+    if st.session_state['analysis_results'] is not None:
+        results = st.session_state['analysis_results']
+        metadata = st.session_state['analysis_metadata']
+        
         if results:
             df = pd.DataFrame(results).sort_values(by="발굴점수", ascending=False)
             
             # 통계 요약
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("분석 종목", f"{len(stock_list)}개")
+                st.metric("분석 종목", f"{metadata['total_stocks']}개")
             with col2:
-                st.metric("선별 종목", f"{len(results)}개")
+                st.metric("선별 종목", f"{metadata['selected_stocks']}개")
             with col3:
                 strong_buy = len(df[df['의견'].str.contains('Strong Buy')])
                 st.metric("Strong Buy", f"{strong_buy}개")
@@ -680,7 +705,8 @@ def main():
                 label="📥 CSV 다운로드",
                 data=csv,
                 file_name=f"stock_analysis_{time.strftime('%Y%m%d')}.csv",
-                mime="text/csv"
+                mime="text/csv",
+                key="csv_download"  # 고유 키 추가
             )
             
             # 텔레그램 전송
@@ -691,14 +717,14 @@ def main():
                 st.info("💬 텔레그램 봇으로 Top 10 리포트를 전송하시겠습니까?")
             
             with col_right:
-                if st.button("📱 텔레그램 전송", type="primary"):
+                if st.button("📱 텔레그램 전송", type="primary", key="telegram_send"):
                     with st.spinner("전송 중..."):
                         top10 = df.head(10)
                         
                         # 메시지 작성
                         msg = f"<b>📊 [AI 주식비서] 오늘의 Top 10</b>\n"
-                        msg += f"분석: {len(stock_list)}개 → 선별: {len(results)}개\n"
-                        msg += f"시간: {time.strftime('%Y-%m-%d %H:%M')}\n"
+                        msg += f"분석: {metadata['total_stocks']}개 → 선별: {metadata['selected_stocks']}개\n"
+                        msg += f"시간: {metadata['timestamp']}\n"
                         msg += "="*30 + "\n\n"
                         
                         for idx, (i, row) in enumerate(top10.iterrows(), 1):
