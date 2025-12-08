@@ -595,6 +595,8 @@ def main():
         st.session_state['analysis_results'] = None
     if 'analysis_metadata' not in st.session_state:
         st.session_state['analysis_metadata'] = None
+    if 'run_analysis' not in st.session_state:
+        st.session_state['run_analysis'] = False
     
     with st.sidebar:
         st.header("⚙️ Settings")
