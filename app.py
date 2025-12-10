@@ -339,6 +339,7 @@ def analyze_stock_simple(code, name, token):
         current_eps = stock_info['eps']
         forward_eps = naver_data['forward_eps']
         
+        eps_source = "현재"
         if forward_eps and forward_eps > 0 and current_eps > 0:
             ratio = forward_eps / current_eps
             if 0.5 <= ratio <= 2.0:
@@ -346,13 +347,11 @@ def analyze_stock_simple(code, name, token):
                 eps_source = "컨센서스"
             else:
                 used_eps = current_eps
-                eps_source = "현재"
         elif forward_eps and forward_eps > 0:
             used_eps = forward_eps
             eps_source = "컨센서스"
         else:
             used_eps = current_eps
-            eps_source = "현재"
         
         # EPS 필터
         if used_eps <= 100:
@@ -446,7 +445,40 @@ def analyze_stock_simple(code, name, token):
             (supply_score * 10) +
             ((100 - rsi) / 100 * 25)
         ))
+
+        # -----------------------------------------------
+        # [추가] 투자 가치 설명 및 추천 매매가 로직
+        # -----------------------------------------------
+        reasons = []
+        # 1. 밸류에이션 관점
+        if upside >= 30:
+            reasons.append("📉 현저한 저평가 (괴리율 30% 이상)")
+        elif upside >= 20:
+            reasons.append("📉 저평가 매력 (상승여력 충분)")
         
+        # 2. 수급 관점
+        if supply_score >= 1:
+            reasons.append("💰 메이저(외인/기관) 수급 유입 중")
+        
+        # 3. 펀더멘털 관점
+        if roe >= 10:
+            reasons.append("💎 견조한 수익성 (ROE 10% 이상)")
+        if eps_source == "컨센서스":
+            reasons.append("📈 실적 성장 기대 (Forward EPS 사용)")
+            
+        # 4. 기술적 관점
+        if is_bull_trend:
+            reasons.append("📈 상승 추세 (20일선 위)")
+        elif rsi <= 40:
+            reasons.append("ea 과매도 구간 (기술적 반등 기대)")
+
+        reason_text = " + ".join(reasons) if reasons else "저평가 매력 보유"
+
+        # 추천 매매가 (단기 스윙 기준)
+        # 매수: 현재가 ~ 현재가 -2% 구간 / 매도: 적정주가
+        buy_price = f"{int(price * 0.98):,} ~ {int(price):,}원"
+        sell_price = f"{int(target_price):,}원"
+
         return {
             "종목명": name,
             "현재가": int(price),
@@ -460,6 +492,10 @@ def analyze_stock_simple(code, name, token):
             "ROE(%)": round(roe, 1),
             "EPS출처": eps_source,
             "목표PER": round(base_per, 1),
+            # 추가된 필드
+            "분석사유": reason_text,
+            "매수가": buy_price,
+            "매도가": sell_price
         }
         
     except:
@@ -632,7 +668,28 @@ def main():
             
             st.markdown("---")
             
-            tab1, tab2, tab3, tab4 = st.tabs(["📊 결과", "📈 차트", "🔍 목표가 검증", "🐛 디버그"])
+            # [추가된 섹션] A등급 상세 리포트
+            st.subheader("🏆 A등급 종목 상세 투자 리포트")
+            a_grade_stocks = df[df['투자등급'] == 'A']
+            
+            if not a_grade_stocks.empty:
+                for idx, row in a_grade_stocks.iterrows():
+                    with st.expander(f"📌 {row['종목명']} ({row['의견']})", expanded=True):
+                        st.markdown(f"**💡 투자 포인트:** {row['분석사유']}")
+                        
+                        col_buy, col_sell, col_info = st.columns(3)
+                        with col_buy:
+                            st.info(f"**🔵 추천 매수가**\n\n{row['매수가']}")
+                        with col_sell:
+                            st.error(f"**🔴 목표 매도가**\n\n{row['매도가']}")
+                        with col_info:
+                            st.success(f"**수익 기대율**\n\n+{row['괴리율(%)']}%")
+            else:
+                st.info("현재 기준 A등급(강력 매수) 종목이 포착되지 않았습니다.")
+
+            st.markdown("---")
+
+            tab1, tab2, tab3, tab4 = st.tabs(["📊 전체 결과", "📈 차트", "🔍 목표가 검증", "🐛 디버그"])
             
             with tab1:
                 st.dataframe(
@@ -755,4 +812,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
