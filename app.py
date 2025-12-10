@@ -29,16 +29,46 @@ def install_korean_font():
 install_korean_font()
 
 # -----------------------------------------------------------
-# [설정] API Key
+# [설정] API Key & Telegram Secrets
 # -----------------------------------------------------------
 try:
+    # 한국투자증권 API
     APP_KEY = st.secrets["APP_KEY"]
     APP_SECRET = st.secrets["APP_SECRET"]
+    
+    # 텔레그램 설정 (없어도 실행되도록 get 사용)
+    TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN")
+    TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID")
 except:
-    st.error("🚨 API 키가 설정되지 않았습니다!")
+    st.error("🚨 secrets.toml 파일에 API 키 설정이 필요합니다!")
     st.stop()
 
 BASE_URL = "https://openapi.koreainvestment.com:9443"
+
+# =============================================================================
+# [텔레그램 전송 함수 (추가됨)]
+# =============================================================================
+
+def send_telegram_message(message):
+    """텔레그램 메시지 전송"""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return False, "토큰 또는 채팅 ID가 설정되지 않았습니다."
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = {
+        'chat_id': TELEGRAM_CHAT_ID,
+        'text': message,
+        'parse_mode': 'Markdown' # 마크다운 형식 지원
+    }
+    
+    try:
+        res = requests.post(url, data=data)
+        if res.status_code == 200:
+            return True, "전송 성공"
+        else:
+            return False, f"전송 실패 ({res.status_code})"
+    except Exception as e:
+        return False, str(e)
 
 # =============================================================================
 # [데이터 수집 함수들]
@@ -570,6 +600,38 @@ def main():
         if results:
             df = pd.DataFrame(results).sort_values(by="밸류점수", ascending=False)
             
+            # -----------------------------------------------------------------------------
+            # [텔레그램 전송 버튼 추가]
+            # -----------------------------------------------------------------------------
+            with st.container():
+                col_btn, col_msg = st.columns([1, 4])
+                with col_btn:
+                    if st.button("📱 텔레그램으로 요약 전송"):
+                        if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+                            st.warning("⚠️ 텔레그램 설정(secrets.toml)이 없습니다.")
+                        else:
+                            with st.spinner("전송 중..."):
+                                # 상위 5개 종목 요약
+                                top5 = df.head(5)
+                                msg = f"📈 *[AI 주식비서] 추천 Top 5*\n({datetime.now().strftime('%Y-%m-%d')})\n\n"
+                                
+                                for _, row in top5.iterrows():
+                                    icon = "🔥" if row['투자등급'] == 'A' else "✅"
+                                    msg += f"{icon} *{row['종목명']}* ({row['투자등급']})\n"
+                                    msg += f"   현재가: {row['현재가']:,}원\n"
+                                    msg += f"   적정가: {row['적정주가']:,}원\n"
+                                    msg += f"   괴리율: +{row['괴리율(%)']}%\n\n"
+                                
+                                msg += "※ 본 정보는 투자 참고용입니다."
+                                
+                                success, res_msg = send_telegram_message(msg)
+                                if success:
+                                    st.success("✅ 전송 완료!")
+                                else:
+                                    st.error(f"❌ 전송 실패: {res_msg}")
+            
+            # -----------------------------------------------------------------------------
+            
             # 통계
             col1, col2, col3, col4 = st.columns(4)
             with col1:
@@ -709,3 +771,14 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
+
+### 사용 전 설정 (`secrets.toml`)
+
+텔레그램 기능을 사용하려면 `.streamlit/secrets.toml` 파일에 아래 내용을 추가해야 합니다.
+
+```toml
+APP_KEY = "한국투자증권_앱키"
+APP_SECRET = "한국투자증권_시크릿키"
+TELEGRAM_TOKEN = "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
+TELEGRAM_CHAT_ID = "12345678"
