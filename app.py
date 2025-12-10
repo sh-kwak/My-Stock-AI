@@ -35,7 +35,7 @@ try:
     APP_KEY = st.secrets["APP_KEY"]
     APP_SECRET = st.secrets["APP_SECRET"]
 except:
-    st.error("🚨 API 키가 설정되지 않았습니다!")
+    st.error("🚨 API 키가 설정되지 않았습니다! secrets.toml 파일을 확인해주세요.")
     st.stop()
 
 BASE_URL = "https://openapi.koreainvestment.com:9443"
@@ -177,7 +177,7 @@ def get_naver_data(stock_code, stock_name=""):
         }
 
 def get_technical_indicators(stock_code, access_token):
-    """RSI 계산"""
+    """RSI, 이동평균선 등 기술적 지표 계산"""
     url = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-price"
     headers = {
         "content-type": "application/json",
@@ -224,7 +224,7 @@ def get_technical_indicators(stock_code, access_token):
         return None, False, 50.0
 
 def get_supply_score(stock_code, access_token):
-    """외인/기관 수급"""
+    """외국인/기관 수급 분석"""
     url = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor"
     headers = {
         "content-type": "application/json",
@@ -269,7 +269,7 @@ def get_supply_score(stock_code, access_token):
         return 0, "에러"
 
 def get_analyst_target_price(stock_code):
-    """네이버 증권사 목표가 크롤링"""
+    """네이버 증권 컨센서스 목표가 크롤링"""
     try:
         url = f"https://finance.naver.com/item/main.naver?code={stock_code}"
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -313,35 +313,36 @@ def get_analyst_target_price(stock_code):
         return None
 
 # =============================================================================
-# [분석 함수]
+# [분석 함수] - 투자 리포트 생성 로직 포함
 # =============================================================================
 
 def analyze_stock_simple(code, name, token):
-    """간소화된 분석 함수"""
+    """종목 분석 및 투자 리포트 생성"""
     try:
-        # 기본 데이터
+        # 1. 기본 데이터 수집
         stock_info = get_stock_data(code, token)
         if not stock_info or stock_info['price'] <= 0:
             return None
         
-        # 네이버 데이터
+        # 2. 재무 데이터 수집 (네이버)
         naver_data = get_naver_data(code, name)
         
-        # 기술적 지표
+        # 3. 기술적 지표 및 수급
         ma20, is_bull_trend, rsi = get_technical_indicators(code, token)
         supply_score, supply_msg = get_supply_score(code, token)
         
-        # RSI 과열 제외
+        # [필터] RSI 과열 (단기 고점 위험)
         if rsi > 75:
             return None
         
-        # EPS 결정
+        # 4. 적정 주가 산출을 위한 EPS 결정
         current_eps = stock_info['eps']
         forward_eps = naver_data['forward_eps']
         
         eps_source = "현재"
         if forward_eps and forward_eps > 0 and current_eps > 0:
             ratio = forward_eps / current_eps
+            # Forward EPS가 현재 대비 0.5~2.0배 사이면 신뢰 (너무 크면 오류 가능성)
             if 0.5 <= ratio <= 2.0:
                 used_eps = forward_eps
                 eps_source = "컨센서스"
@@ -353,11 +354,11 @@ def analyze_stock_simple(code, name, token):
         else:
             used_eps = current_eps
         
-        # EPS 필터
+        # [필터] 적자 기업 제외 (EPS 100원 이하)
         if used_eps <= 100:
             return None
         
-        # EPS 상한 (비정상 값 제외)
+        # [필터] EPS 데이터 오류 방지 (비정상적으로 큰 값)
         if '바이오' in name or '제약' in name:
             eps_limit = 50000
         elif '반도체' in name or '하이닉스' in name:
@@ -368,7 +369,7 @@ def analyze_stock_simple(code, name, token):
         if used_eps > eps_limit:
             return None
         
-        # PER 계산
+        # 5. 목표 PER 결정
         per_history = naver_data['per_history']
         if per_history:
             hist_per = np.median(per_history)
@@ -376,9 +377,10 @@ def analyze_stock_simple(code, name, token):
             hist_per = 12.0
         
         sector_per = naver_data['sector_per']
+        # 역사적 PER(60%)와 업종 PER(40%)를 가중 평균
         base_per = (hist_per * 0.6) + (sector_per * 0.4)
         
-        # ROE 할증
+        # ROE 할증 (수익성이 좋으면 프리미엄 부여)
         roe = naver_data['roe']
         if roe >= 20:
             base_per *= 1.15
@@ -387,7 +389,7 @@ def analyze_stock_simple(code, name, token):
         elif roe < 5:
             base_per *= 0.85
         
-        # 업종 상한
+        # 업종별 PER 상한선 적용 (보수적 접근)
         per_caps = {
             '바이오': 30, '셀트리온': 30,
             'NAVER': 20, '카카오': 20, '게임': 18,
@@ -402,25 +404,25 @@ def analyze_stock_simple(code, name, token):
         else:
             base_per = min(base_per, 15)
         
-        # 적정가
+        # 6. 적정주가 계산
         target_price = used_eps * base_per
         price = stock_info['price']
         
-        # 적정가 필터 (현재가의 70% 이상)
+        # [필터] 현재가가 적정가의 70% 미만인 경우는 너무 싸서 의심스러움 (제외)
         if target_price < price * 0.7:
             return None
         
-        # 최종 상한 (현재가의 1.7배)
+        # 상한선 적용 (현재가의 1.7배까지만 인정)
         target_price = min(target_price, price * 1.7)
         
-        # 괴리율
+        # 괴리율 계산 (상승 여력)
         upside = ((target_price - price) / price) * 100
         
-        # 괴리율 필터 (10~50%)
+        # [필터] 괴리율 10~50% 사이만 추출 (현실적인 범위)
         if upside < 10 or upside > 50:
             return None
         
-        # 등급
+        # 7. 투자 등급 산정
         if upside >= 25 and (supply_score >= 1 or is_bull_trend) and rsi < 65:
             grade = "A"
             signal = "Strong Buy (★★★)"
@@ -434,11 +436,11 @@ def analyze_stock_simple(code, name, token):
             grade = "C"
             signal = "Hold"
         
-        # 하락세 보정
+        # 하락 추세일 경우 경고 표시
         if not is_bull_trend and "Buy" in signal:
             signal += " (하락세)"
         
-        # 밸류 점수
+        # 밸류 점수 계산 (랭킹용)
         value_score = min(100, int(
             (upside / 50 * 40) +
             (min(roe, 20) / 20 * 25) +
@@ -447,53 +449,51 @@ def analyze_stock_simple(code, name, token):
         ))
 
         # -----------------------------------------------
-        # [수정] 투자 이유 상세 설명 생성 (가격 제시 제거)
+        # [상세 리포트] 투자 포인트 생성 로직
         # -----------------------------------------------
         detailed_reasons = []
         
         # 1. 밸류에이션 (안전마진)
-        if upside >= 50:
-            detailed_reasons.append(f"📉 **압도적 저평가**: 적정 주가 대비 {upside:.1f}%의 괴리율을 보이며, 강력한 안전마진이 확보되었습니다.")
-        elif upside >= 30:
-            detailed_reasons.append(f"📉 **매력적인 밸류에이션**: 현재 주가는 적정 가치보다 30% 이상 저렴하여 상승 여력이 충분합니다.")
+        if upside >= 40:
+            detailed_reasons.append(f"📉 **압도적 저평가**: 적정 주가 대비 {upside:.1f}%의 괴리율을 보이며, 강력한 안전마진이 확보된 상태입니다.")
         elif upside >= 20:
-            detailed_reasons.append(f"📉 **저평가 구간**: 펀더멘털 대비 주가가 저평가되어 있어 분할 매수 관점이 유효합니다.")
+            detailed_reasons.append(f"📉 **매력적인 밸류에이션**: 현재 주가는 펀더멘털 대비 약 {upside:.1f}% 저렴하여 상승 여력이 충분합니다.")
             
         # PBR 체크 (자산가치)
         try:
             pbr = stock_info.get('pbr', 0)
             if 0 < pbr < 0.8:
-                detailed_reasons.append(f"🏢 **자산가치 부각**: PBR {pbr}배로 청산가치에도 미치지 못하는 절대 저평가 상태입니다.")
+                detailed_reasons.append(f"🏢 **자산가치 부각**: PBR {pbr}배로, 회사가 보유한 자산 가치보다도 시가총액이 낮은 절대 저평가 구간입니다.")
         except:
             pass
 
-        # 2. 성장성 및 실적 (EPS Source 활용)
+        # 2. 성장성 (EPS Source 활용)
         if eps_source == "컨센서스":
             growth_pct = ((forward_eps - current_eps) / current_eps * 100) if current_eps > 0 else 0
             if growth_pct >= 20:
-                detailed_reasons.append(f"🚀 **고성장 기대**: 향후 실적(EPS)이 현재 대비 {growth_pct:.1f}% 성장할 것으로 전망되는 '실적 개선주'입니다.")
-            else:
-                detailed_reasons.append("📈 **실적 우상향**: 미래 실적 추정치가 긍정적이며, 이에 따른 주가 재평가가 기대됩니다.")
+                detailed_reasons.append(f"🚀 **실적 퀀텀 점프**: 향후 실적(EPS)이 현재 대비 {growth_pct:.1f}% 급증할 것으로 전망되는 고성장주입니다.")
+            elif growth_pct > 0:
+                detailed_reasons.append("📈 **실적 우상향**: 미래 실적 추정치가 긍정적이며, 실적 개선에 따른 주가 재평가가 기대됩니다.")
         
         # 3. 수익성 (ROE)
         if roe >= 20:
-            detailed_reasons.append(f"💎 **초고수익성 기업**: ROE {roe}%를 기록하며 압도적인 자본 효율성을 증명하고 있습니다.")
+            detailed_reasons.append(f"💎 **탁월한 수익성**: ROE {roe}%를 기록하며 동종 업계 대비 압도적인 자본 효율성을 증명하고 있습니다.")
         elif roe >= 10:
-            detailed_reasons.append(f"💰 **안정적 이익 창출**: ROE {roe}%로 꾸준하고 탄탄한 수익성을 유지하고 있습니다.")
+            detailed_reasons.append(f"💰 **견조한 펀더멘털**: ROE {roe}%로 꾸준하고 안정적인 이익을 창출하고 있습니다.")
 
         # 4. 수급 (Supply Msg 활용)
         if "외인" in supply_msg and "기관" in supply_msg:
-            detailed_reasons.append("🤝 **메이저 쌍끌이 매수**: 외국인과 기관이 동시에 물량을 모아가며 수급이 크게 개선되고 있습니다.")
+            detailed_reasons.append("🤝 **메이저 쌍끌이 매수**: 외국인과 기관이 동시에 물량을 모아가며 수급 주체가 뚜렷해지고 있습니다.")
         elif "기관" in supply_msg:
-            detailed_reasons.append("🏦 **기관의 선택**: 최근 기관 투자자들의 연속적인 순매수가 유입되고 있습니다.")
+            detailed_reasons.append("🏦 **기관의 러브콜**: 최근 기관 투자자들의 연속적인 순매수가 유입되어 주가 하방 경직성을 확보했습니다.")
         elif "외인" in supply_msg:
-            detailed_reasons.append("🌎 **스마트 머니 유입**: 외국인 자금이 지속적으로 들어오며 주가를 지지하고 있습니다.")
+            detailed_reasons.append("🌎 **스마트 머니 유입**: 외국인 자금이 지속적으로 유입되며 주가 상승을 견인하고 있습니다.")
 
         # 5. 기술적 위치
         if is_bull_trend:
-            detailed_reasons.append("📊 **상승 추세 지속**: 주가가 20일 이동평균선 위에 안착하여 견고한 상승 흐름을 이어가고 있습니다.")
+            detailed_reasons.append("📊 **정배열 상승 추세**: 주가가 20일 이동평균선 위에 안착하여 견고한 상승 흐름을 이어가고 있습니다.")
         elif rsi <= 35:
-            detailed_reasons.append("ea **과매도 바닥권**: RSI 지표상 과매도 구간에 진입하여 기술적 반등 가능성이 높습니다.")
+            detailed_reasons.append("ea **과매도 바닥권**: RSI 지표상 과매도 구간에 진입하여 기술적 반등 가능성이 매우 높습니다.")
 
         # 분석 사유가 없을 경우 기본 멘트
         if not detailed_reasons:
@@ -514,7 +514,7 @@ def analyze_stock_simple(code, name, token):
             "ROE(%)": round(roe, 1),
             "EPS출처": eps_source,
             "목표PER": round(base_per, 1),
-            "분석사유": reason_text
+            "분석사유": reason_text # 생성된 투자 리포트
         }
         
     except:
@@ -687,7 +687,9 @@ def main():
             
             st.markdown("---")
             
-            # [수정된 섹션] A등급 상세 리포트 (추천사유 상세화)
+            # -------------------------------------------------------
+            # [A등급 상세 리포트] (가격 대신 투자 포인트 중심)
+            # -------------------------------------------------------
             st.subheader("🏆 A등급 종목 상세 투자 리포트")
             a_grade_stocks = df[df['투자등급'] == 'A']
             
@@ -695,14 +697,14 @@ def main():
                 for idx, row in a_grade_stocks.iterrows():
                     with st.expander(f"📌 {row['종목명']} ({row['의견']})", expanded=True):
                         st.markdown("### 💡 핵심 투자 포인트")
-                        st.markdown(row['분석사유']) # 상세 분석 내용 출력
+                        st.info(row['분석사유']) # 상세 분석 내용 출력
                         
-                        st.markdown("---")
+                        st.markdown("#### 📊 주요 지표")
                         c1, c2, c3, c4 = st.columns(4)
-                        c1.metric("괴리율", f"+{row['괴리율(%)']}%")
-                        c2.metric("ROE", f"{row['ROE(%)']}%")
-                        c3.metric("PER", f"{row['목표PER']}배")
-                        c4.metric("수급", row['수급'])
+                        c1.metric("괴리율(상승여력)", f"+{row['괴리율(%)']}%")
+                        c2.metric("ROE (수익성)", f"{row['ROE(%)']}%")
+                        c3.metric("PER (밸류에이션)", f"{row['목표PER']}배")
+                        c4.metric("최근 수급", row['수급'])
             else:
                 st.info("현재 기준 A등급(강력 매수) 종목이 포착되지 않았습니다.")
 
