@@ -494,6 +494,40 @@ def get_chart(df):
     except:
         return None
 
+# -----------------------------------------------------------
+# [텔레그램 전송 함수] (수정됨 - 더 상세한 정보)
+# -----------------------------------------------------------
+def send_telegram_message(message):
+    try:
+        if "TELEGRAM_TOKEN" not in st.secrets or "TELEGRAM_CHAT_ID" not in st.secrets:
+            return 
+            
+        bot_token = st.secrets["TELEGRAM_TOKEN"]
+        chat_id = st.secrets["TELEGRAM_CHAT_ID"]
+        
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        data = {'chat_id': chat_id, 'text': message, 'parse_mode': 'HTML'}
+        requests.post(url, data=data)
+    except:
+        pass
+
+def send_telegram_photo(fig):
+    try:
+        if "TELEGRAM_TOKEN" not in st.secrets or "TELEGRAM_CHAT_ID" not in st.secrets:
+            return 
+
+        bot_token = st.secrets["TELEGRAM_TOKEN"]
+        chat_id = st.secrets["TELEGRAM_CHAT_ID"]
+        
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+        buf.seek(0)
+        
+        url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+        requests.post(url, data={'chat_id': chat_id}, files={'photo': buf})
+    except:
+        pass
+
 # =============================================================================
 # [Main]
 # =============================================================================
@@ -709,3 +743,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
