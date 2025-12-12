@@ -1152,8 +1152,12 @@ def main():
                             verification_results = []
                             
                             # 종목코드 가져오기 위해 stock_list 다시 가져오기
-                            stock_list = get_top_stocks(200)
-                            stock_code_map = {name: code for code, name in stock_list}
+                            result = get_top_stocks(200)
+                            if isinstance(result, tuple):
+                                stock_list_full, _ = result
+                            else:
+                                stock_list_full = result
+                            stock_code_map = {name: code for code, name in stock_list_full}
                             
                             for _, row in a_grade_df.iterrows():
                                 stock_name = row['종목명']
