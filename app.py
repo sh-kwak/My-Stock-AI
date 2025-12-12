@@ -1315,15 +1315,13 @@ def main():
             
             st.markdown("---")
             
-            tab1, tab2, tab3 = st.tabs(["📊 분석 결과", "📈 차트", "� A등급 검증"])
+            tab1, tab2, tab3, tab4 = st.tabs(["📊 분석 결과", "📈 차트", "🧪 A등급 검증", "🧷 6개월 미니 백테스트"])
             
             with tab1:
                 st.subheader("🏆 Top Picks (밸류점수 순)")
                 st.dataframe(
                     df.style.background_gradient(subset=['괴리율(%)'], cmap='Greens')
                           .background_gradient(subset=['밸류점수'], cmap='Blues'),
-                    use_container_width=True,
-                    height=450
                 )
                 
                 # CSV 다운로드
@@ -1405,6 +1403,64 @@ def main():
                                             st.warning(f"⚠️ {v['message']}")
                             else:
                                 st.error("검증 결과를 가져올 수 없습니다.")
+            
+            with tab4:
+                st.subheader("🧷 6개월 워크포워드 미니 백테스트 (룩어헤드 최소)")
+                st.info("과거 가격 데이터만으로 계산 가능한 기술적 지표(RSI, MA, 거래대금, ATR)로 필터링 후 수익률 검증")
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    top_k = st.slider("Top K 종목수", 3, 20, 10)
+                with col2:
+                    hold_days = st.selectbox("보유기간(거래일)", [5, 10, 20], index=0)
+                with col3:
+                    weekday = st.selectbox("리밸런싱 요일", ["월", "화", "수", "목", "금"], index=0)
+                
+                weekday_map = {"월": 0, "화": 1, "수": 2, "목": 3, "금": 4}
+                
+                if st.button("▶ 백테스트 실행", type="primary", key="run_backtest"):
+                    with st.spinner("백테스트 중... (6개월 데이터 로딩)"):
+                        stock_list_bt, _ = get_top_stocks(100)
+                        out = run_walkforward_backtest_6m(
+                            stock_list_bt,
+                            months=6,
+                            top_k=top_k,
+                            rebalance_weekday=weekday_map[weekday],
+                            hold_days=hold_days
+                        )
+                    
+                    if out is None:
+                        st.warning("⚠️ 백테스트 결과가 없습니다 (데이터 부족 또는 필터 과도).")
+                    else:
+                        bt_df, summary = out
+                        
+                        st.success("✅ 백테스트 완료!")
+                        
+                        # 통계 표시
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("거래 수", summary["trades"])
+                        c2.metric("평균 수익률", f"{summary['avg_return']:.2f}%")
+                        c3.metric("중앙값 수익률", f"{summary['median_return']:.2f}%")
+                        c4.metric("승률", f"{summary['win_rate']:.1f}%")
+                        
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.metric("최고 거래", f"{summary['best_trade']:.2f}%")
+                        with col_b:
+                            st.metric("최악 거래", f"{summary['worst_trade']:.2f}%")
+                        
+                        st.markdown("---")
+                        st.subheader("📋 거래 내역")
+                        st.dataframe(bt_df, use_container_width=True, height=400)
+                        
+                        with st.expander("📖 결과 해석 가이드"):
+                            st.markdown("""
+                            **승률 50% 이상 + 평균 수익률 양수** → 필터가 통계적으로 유리  
+                            **승률 낮거나 평균 음수** → 필터 재조정 필요  
+                            
+                            ⚠️ **룩어헤드 바이어스 최소화**: EPS/ROE 같은 미래 정보 배제, 순수 기술적 지표만 사용
+                            """)
+
             
             # 텔레그램
             st.markdown("---")
