@@ -254,14 +254,30 @@ def get_technical_indicators(stock_code, access_token):
         return None, None, False, False, 50.0
 
 def calculate_rsi(prices, period=14):
+    """
+    [Phase 1.5 수정] RSI 계산 안정화
+    - loss=0 케이스 처리로 신호 왜곡 방지
+    """
     if len(prices) < period + 1:
         return 50.0
     delta = pd.Series(prices).diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
+    
+    # [Phase 1.5] loss=0 처리: 극단적 상승장에서 RSI가 100으로 튀는 것 방지
+    loss_val = loss.iloc[-1]
+    gain_val = gain.iloc[-1]
+    
+    if pd.isna(loss_val) or pd.isna(gain_val):
+        return 50.0
+    
+    if loss_val == 0:
+        # loss가 0이면 천장 부근으로 간주하되, 70으로 제한 (과열 신호)
+        return 70.0
+    
+    rs = gain_val / loss_val
     rsi = 100 - (100 / (1 + rs))
-    return rsi.iloc[-1]
+    return rsi
 
 def get_supply_score(stock_code, access_token):
     """외인/기관 수급 점수"""
@@ -738,9 +754,10 @@ def analyze_stock_v3(code, name, token):
         if composite_target is None or composite_target <= 0:
             return None
         
-        # [Phase 1 수정] 가치함정 필터: 현재가가 적정가의 70% 미만이면 제외 (과도한 저평가 = 데이터 오류 가능성)
-        if per_target and price < per_target * 0.7:
-            return None
+        # [Phase 1.5 수정] 가치함정 필터 완화: 종합적정가 기준으로 변경
+        # PER만 낮게 계산돼도 탈락하는 문제 해결
+        if composite_target and price < composite_target * 0.6:
+            return None  # 종합적정가의 60% 미만이면 과도한 저평가
         
         # 11. 괴리율 계산
         upside = ((composite_target - price) / price) * 100 if price > 0 else 0
@@ -767,16 +784,26 @@ def analyze_stock_v3(code, name, token):
         else:
             return None
         
-        # [Phase 1 수정] 하락세 보정 강화
+        # [Phase 1.5 수정] 추세 표기 2단계로 분리
+        if is_mid_bull and is_short_bull:
+            trend_status = "상승 추세"
+        elif is_mid_bull and not is_short_bull:
+            trend_status = "중기상승·단기조정"
+        elif not is_mid_bull and is_short_bull:
+            trend_status = "단기반등 중"
+        else:
+            trend_status = "하락 추세"
+        
+        # 추세에 따른 등급/의견 보정
         if not is_mid_bull:
             if grade == "A" and not is_short_bull:
                 # 단기/중기 모두 하락이면 B로 강등
                 grade = "B"
-                signal = "Buy (추세 확인 필요)"
+                signal = f"Buy ({trend_status})"
             elif grade == "A":
-                signal += " (단기반등 중)"
+                signal += f" ({trend_status})"
             elif not is_short_bull and "Buy" in signal:
-                signal = "Hold (하락세)"
+                signal = f"Hold ({trend_status})"
         
         # 13. 밸류 점수 (0~100) - 보수적 조정
         value_score = min(100, int(
