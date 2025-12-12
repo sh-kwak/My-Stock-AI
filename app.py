@@ -62,9 +62,43 @@ def get_top_stocks(limit=100):
         stock_list = []
         for idx, row in df_top.iterrows():
             stock_list.append((str(row['Code']), row['Name']))
-        return stock_list
+        return stock_list, df_total  # KRX 전체 리스팅도 반환
     except:
-        return []
+        return [], None
+
+@st.cache_data(ttl=3600)
+def get_krx_listing():
+    """KRX 전체 리스팅 조회 (우선주 매핑용)"""
+    try:
+        return fdr.StockListing('KRX')
+    except:
+        return None
+
+def map_to_common_stock_code(stock_code, stock_name):
+    """
+    우선주면 보통주 코드를 찾아서 반환.
+    못 찾으면 원래 코드 반환.
+    """
+    import re
+    
+    # 우선주 패턴 감지
+    if not re.search(r'우|우B|1우|2우|3우', stock_name):
+        return stock_code
+    
+    df = get_krx_listing()
+    if df is None or len(df) == 0:
+        return stock_code
+    
+    # 우선주 접미어 제거한 베이스 이름 (예: '현대차2우B' -> '현대차')
+    base = re.sub(r'\s*\d?우.*$', '', stock_name).strip()
+    
+    # 보통주 후보: 이름이 base로 시작하고 '우'가 없는 것 중 시총 최대
+    candidates = df[(df['Name'].str.startswith(base)) & (~df['Name'].str.contains('우'))]
+    if len(candidates) == 0:
+        return stock_code
+    
+    common = candidates.sort_values('Marcap', ascending=False).iloc[0]
+    return str(common['Code'])
 
 def get_stock_data(stock_code, access_token):
     """KIS API에서 현재가, EPS 가져오기"""
@@ -377,6 +411,7 @@ def get_analyst_target_price(stock_code):
 def verify_a_grade_stock(stock_code, stock_name, our_target, current_price):
     """
     [A등급 검증] 우리 적정가 vs 증권사 목표가 비교
+    [개선] 우선주면 보통주 코드로 목표가 조회
     
     Returns:
         dict: {
@@ -386,7 +421,9 @@ def verify_a_grade_stock(stock_code, stock_name, our_target, current_price):
             'reliability': 신뢰도 등급
         }
     """
-    analyst_target = get_analyst_target_price(stock_code)
+    # 우선주면 보통주 코드로 목표가 조회 시도
+    verify_code = map_to_common_stock_code(stock_code, stock_name)
+    analyst_target = get_analyst_target_price(verify_code)
     
     if analyst_target is None:
         return {
@@ -1011,7 +1048,11 @@ def main():
         progress = st.progress(0)
         
         status.text("📋 종목 리스트 확보 중...")
-        stock_list = get_top_stocks(top_n)
+        result = get_top_stocks(top_n)
+        if isinstance(result, tuple):
+            stock_list, _ = result  # (stock_list, df_total) 언패킹
+        else:
+            stock_list = result  # 이전 버전 호환성
         
         if not stock_list:
             st.error("종목 리스트를 가져올 수 없습니다.")
@@ -1020,6 +1061,7 @@ def main():
         
         results = []
         excluded_count = 0
+        exclusion_reasons = {}  # 제외 사유 집계
         
         for i, (code, name) in enumerate(stock_list):
             progress.progress((i + 1) / len(stock_list))
