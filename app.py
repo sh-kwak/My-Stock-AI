@@ -958,41 +958,177 @@ def analyze_stock_v3(code, name, token):
         return None
 
 # =============================================================================
-# [Phase 4] 백테스팅 (간이 버전)
+# [Phase 2.2] 워크포워드 백테스트 (룩어헤드 바이어스 최소화)
 # =============================================================================
 
-@st.cache_data(ttl=7200)
-def run_simple_backtest(stock_codes_names, days_ago=90):
+def calc_indicators_from_df(df):
     """
-    간이 백테스팅: N일 전 가격 대비 현재 수익률 계산
+    FDR DataReader 결과에서 기술적 지표 계산 (과거 시점 백테스트용)
     """
-    results = []
+    try:
+        close = df['Close'].astype(float)
+        high = df['High'].astype(float)
+        low = df['Low'].astype(float)
+        vol = df['Volume'].astype(float)
+        
+        # MA
+        ma20 = close.rolling(20).mean().iloc[-1]
+        ma60 = close.rolling(60).mean().iloc[-1] if len(close) >= 60 else close.rolling(20).mean().iloc[-1]
+        price = close.iloc[-1]
+        
+        is_short_bull = price >= ma20
+        is_mid_bull = price >= ma60
+        
+        # RSI (Wilder 유사)
+        delta = close.diff()
+        gain = delta.clip(lower=0)
+        loss = (-delta).clip(lower=0)
+        alpha = 1/14
+        avg_gain = gain.ewm(alpha=alpha, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=alpha, adjust=False).mean()
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        rsi = (100 - (100/(1+rs))).iloc[-1]
+        if pd.isna(rsi):
+            rsi = 50.0
+        
+        # 거래대금 (20일 평균)
+        trading_value = close * vol
+        avg_trading_value = trading_value.rolling(20).mean().iloc[-1]
+        if pd.isna(avg_trading_value):
+            avg_trading_value = 0
+        
+        # ATR (14)
+        prev_close = close.shift(1)
+        tr = pd.concat([
+            (high - low),
+            (high - prev_close).abs(),
+            (low - prev_close).abs()
+        ], axis=1).max(axis=1)
+        atr = tr.rolling(14).mean().iloc[-1]
+        if pd.isna(atr):
+            atr = 0
+        
+        atr_pct = atr / price if price > 0 else 0
+        
+        return {
+            "price": float(price),
+            "ma20": float(ma20) if not pd.isna(ma20) else None,
+            "ma60": float(ma60) if not pd.isna(ma60) else None,
+            "is_short_bull": bool(is_short_bull),
+            "is_mid_bull": bool(is_mid_bull),
+            "rsi": float(rsi),
+            "avg_trading_value": float(avg_trading_value),
+            "atr_pct": float(atr_pct),
+        }
+    except:
+        return None
+
+def passes_filters(ind):
+    """백테스트용 필터 (analyze_stock_v3의 핵심 필터만)"""
+    if ind is None or ind["ma20"] is None:
+        return False
+    if ind["avg_trading_value"] < 1_000_000_000:  # 10억
+        return False
+    if ind["atr_pct"] > 0.10:  # ATR 10% 초과
+        return False
+    if ind["rsi"] > 75:  # RSI 과열
+        return False
+    return True
+
+@st.cache_data(ttl=3600)
+def run_walkforward_backtest_6m(stock_list, months=6, top_k=10, rebalance_weekday=0, hold_days=5):
+    """
+    6개월 워크포워드 백테스트
+    - 매주 리밸런싱 (rebalance_weekday 요일)
+    - hold_days 거래일 보유 후 수익률 측정
+    """
+    end = datetime.now()
+    start = end - timedelta(days=int(months * 30.5) + 120)
+    start_str = start.strftime('%Y-%m-%d')
+    end_str = end.strftime('%Y-%m-%d')
     
-    for code, name in stock_codes_names[:10]:  # 상위 10개만
+    # 1) 가격 데이터 캐시
+    price_cache = {}
+    for code, name in stock_list:
         try:
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=days_ago + 30)
-            
-            df = fdr.DataReader(code, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
-            
-            if len(df) < days_ago:
+            df = fdr.DataReader(code, start_str, end_str)
+            if df is None or len(df) < 80:
                 continue
-            
-            past_price = df['Close'].iloc[-days_ago] if len(df) >= days_ago else df['Close'].iloc[0]
-            current_price = df['Close'].iloc[-1]
-            
-            return_pct = ((current_price - past_price) / past_price) * 100
-            
-            results.append({
-                'name': name,
-                'past_price': int(past_price),
-                'current_price': int(current_price),
-                'return_pct': round(return_pct, 1)
-            })
+            df = df.sort_index()
+            price_cache[(code, name)] = df
         except:
             continue
     
-    return results
+    if not price_cache:
+        return None
+    
+    # 2) 리밸런싱 날짜
+    any_df = next(iter(price_cache.values()))
+    dates = any_df.index.to_pydatetime().tolist()
+    rebalance_dates = [d for d in dates if d.weekday() == rebalance_weekday]
+    
+    rows = []
+    for d in rebalance_dates:
+        candidates = []
+        for (code, name), df in price_cache.items():
+            sub = df[df.index <= d]
+            if len(sub) < 80:
+                continue
+            
+            ind = calc_indicators_from_df(sub.tail(120))
+            if not passes_filters(ind):
+                continue
+            
+            # 스코어 계산
+            score = 0
+            score += 20 if ind["is_mid_bull"] else 0
+            score += 10 if ind["is_short_bull"] else 0
+            score += (75 - ind["rsi"]) * 0.5
+            score += min(ind["avg_trading_value"] / 1_000_000_000, 30)
+            
+            candidates.append((score, code, name, ind["price"]))
+        
+        candidates.sort(reverse=True, key=lambda x: x[0])
+        picks = candidates[:top_k]
+        if not picks:
+            continue
+        
+        # 3) 보유기간 수익률
+        for score, code, name, entry_price in picks:
+            df = price_cache[(code, name)]
+            future = df[df.index > d]
+            if len(future) < hold_days:
+                continue
+            exit_price = float(future['Close'].iloc[hold_days-1])
+            ret = (exit_price - entry_price) / entry_price * 100
+            
+            rows.append({
+                "rebalance_date": d.date(),
+                "code": code,
+                "name": name,
+                "score": round(score, 2),
+                "entry": int(entry_price),
+                "exit": int(exit_price),
+                "return_pct": round(ret, 2),
+            })
+    
+    if not rows:
+        return None
+    
+    bt = pd.DataFrame(rows)
+    
+    # 4) 요약 통계
+    summary = {
+        "trades": len(bt),
+        "avg_return": float(bt["return_pct"].mean()),
+        "median_return": float(bt["return_pct"].median()),
+        "win_rate": float((bt["return_pct"] > 0).mean() * 100),
+        "best_trade": float(bt["return_pct"].max()),
+        "worst_trade": float(bt["return_pct"].min()),
+    }
+    
+    return bt, summary
+
 
 # =============================================================================
 # [텔레그램]
