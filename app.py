@@ -294,11 +294,13 @@ def get_technical_indicators(stock_code, access_token):
         is_mid_bull = current_price >= ma60
         
         # RSI 계산
-        rsi_val = calculate_rsi(daily_prices_asc)
-        if pd.isna(rsi_val): rsi_val = 50.0
+        rsi_val, rsi_prev = calculate_rsi(daily_prices_asc)
+        if pd.isna(rsi_val): 
+            rsi_val, rsi_prev = 50.0, 50.0
+            
+        rsi_trend = "rising" if rsi_val >= rsi_prev else "falling"
         
-        # [Phase 2.1 수정] 거래대금 (최근 20일 평균)
-        # KIS API에서 acml_tr_pbmn(거래대금 필드) 사용, 없으면 volume*price로 계산
+        # [Phase 2.1] 거래대금 (최근 20일 평균)
         trading_values = []
         for x in output_data[:20]:
             try:
@@ -328,9 +330,9 @@ def get_technical_indicators(stock_code, access_token):
         else:
             atr = 0
         
-        return ma20, ma60, is_short_bull, is_mid_bull, rsi_val, avg_trading_value, atr
+        return ma20, ma60, is_short_bull, is_mid_bull, rsi_val, rsi_trend, avg_trading_value, atr
     except: 
-        return None, None, False, False, 50.0, 0, 0
+        return None, None, False, False, 50.0, "flat", 0, 0
 
 def calculate_rsi(prices, period=14):
     """
@@ -350,19 +352,23 @@ def calculate_rsi(prices, period=14):
     avg_gain = gain.ewm(alpha=alpha, adjust=False).mean()
     avg_loss = loss.ewm(alpha=alpha, adjust=False).mean()
     
-    # loss=0 처리
+    # RS & RSI 시리즈 계산
+    rs = avg_gain / avg_loss
+    rsi_series = 100 - (100 / (1 + rs))
+    
+    # 마지막 값과 전일 값
+    rsi_curr = rsi_series.iloc[-1]
+    if len(rsi_series) >= 2:
+        rsi_prev = rsi_series.iloc[-2]
+    else:
+        rsi_prev = rsi_curr
+        
+    # loss=0 처리 (시리즈 전체에 대해 처리하거나 마지막 값만 처리)
     loss_val = avg_loss.iloc[-1]
-    gain_val = avg_gain.iloc[-1]
-    
-    if pd.isna(loss_val) or pd.isna(gain_val):
-        return 50.0
-    
-    if loss_val == 0:
-        return 95.0  # 강한 상승장, 과열 필터 정상 작동
-    
-    rs = gain_val / loss_val
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    if pd.isna(loss_val) or loss_val == 0:
+        rsi_curr = 95.0
+        
+    return rsi_curr, rsi_prev
 
 def get_supply_score(stock_code, access_token):
     """외인/기관 수급 점수"""
