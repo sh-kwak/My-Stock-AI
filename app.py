@@ -789,7 +789,7 @@ def analyze_stock_v3(code, name, token):
         result_tech = get_technical_indicators(code, token)
         if result_tech[0] is None:  # 데이터 없음
             return None
-        ma20, ma60, is_short_bull, is_mid_bull, rsi, avg_trading_value, atr = result_tech
+        ma20, ma60, is_short_bull, is_mid_bull, rsi, rsi_trend, avg_trading_value, atr = result_tech
         supply_score, supply_msg = get_supply_score(code, token)
         
         # [Phase 2.1] 유동성 필터: 거래대금 10억 미만 제외
