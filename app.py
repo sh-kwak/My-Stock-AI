@@ -876,21 +876,39 @@ def analyze_stock_v3(code, name, token):
         # 11. 괴리율 계산
         upside = ((composite_target - price) / price) * 100 if price > 0 else 0
         
-        # 괴리율 필터 (10% ~ 70%) - 균형 모드
-        if upside < 10 or upside > 70:
+        # 12. [v3.2] 투자 등급 결정 - Sell 시그널 추가
+        # 매도 시그널 (D등급): 보유 종목 매도 타이밍 판단용
+        if upside < 0:
+            # 음수 괴리율 (고평가): 강력 매도
+            grade = "D"
+            if rsi > 70 and not is_short_bull:
+                signal = "Strong Sell (과열+고평가)"
+            else:
+                signal = "Sell (고평가)"
+        elif 0 <= upside < 5:
+            # 약간의 상승여력 (0~5%): 매도 고려
+            grade = "D"
+            # 추가 악재 확인
+            if rsi > 70:
+                signal = "Sell (RSI과열)"
+            elif not is_short_bull:
+                signal = "Sell (MA20이탈)"
+            else:
+                signal = "Sell (상승여력소진)"
+        elif 5 <= upside < 10:
+            # 소폭 상승 가능 (5~10%): 관망 또는 비중 축소
+            grade = "D"
+            signal = "Hold/Reduce (소폭상승)"
+        # 괴리율 70% 초과는 여전히 제외 (비현실적)
+        elif upside > 70:
             return None
-        
-        # 12. [v3.1b 개선] 투자 등급 결정 - A등급 조건 완화
-        # A등급(★★★): 35%로 완화 + 중기 추세 + 수급 + 품질(ROE)
-        if upside >= 35 and supply_score >= 1 and rsi < 60 and is_mid_bull and roe >= 10:
+        # 매수 시그널 (기존 로직)
+        elif upside >= 35 and supply_score >= 1 and rsi < 60 and is_mid_bull and roe >= 10:
             grade = "A"
             signal = "Strong Buy (★★★)"
-        # A등급(★): RSI 68로 완화 + 단기 추세 허용치 확대 + 품질 조건
         elif upside >= 25 and rsi < 68:
-            # 단기 추세 완화: MA20의 -1%까지 허용
-            near_short_bull = (price >= ma20 * 0.99)  # MA20 -1% 허용
+            near_short_bull = (price >= ma20 * 0.99)
             if near_short_bull:
-                # 품질 조건: 수급 양호 OR RSI 충분히 낮음
                 if supply_score >= 1 or rsi <= 55:
                     grade = "A"
                     signal = "Strong Buy (★)"
@@ -907,6 +925,7 @@ def analyze_stock_v3(code, name, token):
             grade = "C"
             signal = "Hold"
         else:
+            # 이 구간은 도달하지 않음 (모든 케이스 커버됨)
             return None
         
         
@@ -1214,7 +1233,8 @@ def main():
     # 사이드바
     with st.sidebar:
         st.header("⚙️ 설정")
-        top_n = st.number_input("분석 종목 수", min_value=10, max_value=200, value=50, step=10)
+        top_n = st.number_input("분석 종목 수", min_value=10, max_value=500, value=50, step=10,
+                                help="최대 500개 종목까지 분석 가능 (시간 소요: 약 50초/100종목)")
         
         st.markdown("---")
         st.markdown("### 🎯 중기 스윙 전략 (20일 보유 최적화)")
@@ -1222,10 +1242,18 @@ def main():
         - ✅ **권장 보유기간**: 2~4주 (20거래일)
         - ✅ MA20 손절: 추세 이탈 시 조기 청산
         - ✅ 투자 부적합 종목 자동 제외 (ROE<5% 등)
-        - ✅ 괴리율: **10% ~ 70%**
+        - ✅ 괴리율: **-100% ~ 70%** (매도신호 포함)
         - ✅ RSI 과열 제외: **75 초과**
-        - ✅ A(★★★): 중기추세 + 수급 + ROE≥10 + 35%+
-        - ✅ A(★): MA20 근처 + (수급 OR RSI≤55) + 25%+
+        
+        **매수 신호**:
+        - A(★★★): 중기추세 + 수급 + ROE≥10 + 35%+
+        - A(★): MA20 근처 + (수급 OR RSI≤55) + 25%+
+        - B: 20%+, C: 10~20% (Hold)
+        
+        **매도 신호 (신규)**:
+        - D: 괴리율 <10% (상승여력 소진)
+        - D: 괴리율 음수 (고평가)
+        - D: RSI 70+ 또는 MA20 이탈
         """)
         
         st.markdown("---")
