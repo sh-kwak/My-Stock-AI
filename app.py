@@ -407,7 +407,7 @@ def get_supply_score(stock_code, access_token):
 
 def get_analyst_target_price(stock_code):
     """
-    [A등급 검증용] 증권사 컨센서스 목표가 크롤링 (개선 버전)
+    [A등급 검증용] 증권사 컨센서스 목표가 크롤링 (개선 버전 v2)
     네이버 증권에서 애널리스트 목표가 평균을 가져옴
     """
     try:
@@ -418,46 +418,68 @@ def get_analyst_target_price(stock_code):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
         
-        # 방법 1: 투자의견 페이지에서 목표가 추출
-        url_opinion = f"https://finance.naver.com/item/coinfo.naver?code={stock_code}"
-        try:
-            res = requests.get(url_opinion, headers=headers, timeout=5)
-            soup = BeautifulSoup(res.content, 'html.parser', from_encoding='euc-kr')
-            
-            # "목표주가" 또는 "목표가" 텍스트가 있는 태그 찾기
-            for elem in soup.find_all(['td', 'th', 'em', 'span', 'strong']):
-                text = elem.get_text(strip=True)
-                if '목표' in text and ('주가' in text or '가격' in text):
-                    # 다음 형제나 부모의 자식에서 숫자 찾기
-                    parent = elem.find_parent(['tr', 'table'])
-                    if parent:
-                        numbers = re.findall(r'[\d,]+', parent.get_text())
-                        for num_str in numbers:
-                            num = int(num_str.replace(',', ''))
-                            if 1000 < num < 10000000:  # 1천원 ~ 1천만원
-                                return num
-        except:
-            pass
-        
-        # 방법 2: 메인 페이지 투자정보 섹션에서 추출
+        # 메인 페이지에서 투자의견 테이블 추출
         url_main = f"https://finance.naver.com/item/main.naver?code={stock_code}"
+        
         try:
             res = requests.get(url_main, headers=headers, timeout=5)
             soup = BeautifulSoup(res.content, 'html.parser', from_encoding='euc-kr')
             
-            # "투자의견" 또는 "컨센서스" 영역 찾기
-            for table in soup.find_all('table'):
+            # 방법 1: summary="투자의견 정보" 테이블 직접 찾기 (가장 정확)
+            opinion_table = soup.find('table', {'summary': '투자의견 정보'})
+            if opinion_table:
+                # "목표주가" 텍스트가 있는 th 찾기
+                for th in opinion_table.find_all('th'):
+                    if '목표주가' in th.get_text():
+                        # 같은 행의 td에서 <em> 태그 안의 숫자 찾기
+                        row = th.find_parent('tr')
+                        if row:
+                            td = row.find('td')
+                            if td:
+                                # <em> 태그 안의 숫자들 추출
+                                em_tags = td.find_all('em')
+                                for em in em_tags:
+                                    em_text = em.get_text(strip=True)
+                                    # 쉼표 포함된 숫자 패턴 (예: 32,143)
+                                    if re.match(r'[\d,]+$', em_text):
+                                        num = int(em_text.replace(',', ''))
+                                        # 목표가 범위: 1천원 ~ 1천만원
+                                        if 1000 < num < 10000000:
+                                            return num
+            
+            # 방법 2: class="rwidth" 테이블 검색
+            for table in soup.find_all('table', class_='rwidth'):
                 table_text = table.get_text()
-                if '투자의견' in table_text or '컨센서스' in table_text or '목표' in table_text:
-                    # 테이블 내의 모든 셀 검사
-                    for cell in table.find_all(['td', 'th']):
-                        cell_text = cell.get_text(strip=True)
-                        # "목표주가" 라벨 찾기
-                        if '목표' in cell_text and '주가' in cell_text:
-                            # 다음 셀이나 같은 행에서 숫자 찾기
-                            row = cell.find_parent('tr')
+                if '목표주가' in table_text:
+                    # 모든 <em> 태그에서 숫자 찾기
+                    for em in table.find_all('em'):
+                        em_text = em.get_text(strip=True)
+                        if re.match(r'[\d,]+$', em_text):
+                            num = int(em_text.replace(',', ''))
+                            if 1000 < num < 10000000:
+                                return num
+            
+            # 방법 3: "목표주가" 텍스트가 있는 모든 테이블 검색
+            for table in soup.find_all('table'):
+                if '목표주가' in table.get_text():
+                    # th에서 "목표주가" 찾기
+                    for th in table.find_all('th'):
+                        if '목표' in th.get_text() and '주가' in th.get_text():
+                            # 같은 행의 td 찾기
+                            row = th.find_parent('tr')
                             if row:
                                 for td in row.find_all('td'):
+                                    # em 태그 우선
+                                    for em in td.find_all('em'):
+                                        num_str = re.sub(r'[^\d,]', '', em.get_text())
+                                        if num_str and ',' in num_str or len(num_str) >= 4:
+                                            try:
+                                                num = int(num_str.replace(',', ''))
+                                                if 1000 < num < 10000000:
+                                                    return num
+                                            except:
+                                                continue
+                                    # em 태그 없으면 일반 텍스트
                                     numbers = re.findall(r'[\d,]+', td.get_text())
                                     for num_str in numbers:
                                         num = int(num_str.replace(',', ''))
@@ -466,32 +488,27 @@ def get_analyst_target_price(stock_code):
         except:
             pass
         
-        # 방법 3: pandas read_html로 테이블 파싱 (기존 방식 개선)
+        # 방법 4: 투자의견 전용 페이지
+        url_opinion = f"https://finance.naver.com/item/coinfo.naver?code={stock_code}"
         try:
-            res = requests.get(url_main, headers=headers, timeout=5)
-            dfs = pd.read_html(io.StringIO(res.text), encoding='euc-kr')
+            res = requests.get(url_opinion, headers=headers, timeout=5)
+            soup = BeautifulSoup(res.content, 'html.parser', from_encoding='euc-kr')
             
-            for df in dfs:
-                df_str = df.astype(str)
-                # "목표주가" 또는 "투자의견" 포함 테이블
-                if any('목표' in str(val) for val in df_str.values.flatten()):
-                    # 모든 셀 순회
-                    for row_idx in range(len(df)):
-                        for col_idx in range(len(df.columns)):
-                            cell = str(df.iloc[row_idx, col_idx])
-                            # "목표주가" 라벨이 있는 셀
-                            if '목표' in cell and ('주가' in cell or '가' in cell):
-                                # 같은 행의 다음 컬럼들 확인
-                                for next_col in range(col_idx + 1, len(df.columns)):
-                                    try:
-                                        val = str(df.iloc[row_idx, next_col])
-                                        val_clean = val.replace(',', '').replace('원', '').strip()
-                                        if val_clean.isdigit():
-                                            num = int(val_clean)
-                                            if 1000 < num < 10000000:
-                                                return num
-                                    except:
-                                        continue
+            # "목표주가" 텍스트 검색
+            for elem in soup.find_all(['td', 'th']):
+                if '목표주가' in elem.get_text():
+                    parent = elem.find_parent('tr')
+                    if parent:
+                        # <em> 태그 우선
+                        for em in parent.find_all('em'):
+                            num_str = re.sub(r'[^\d,]', '', em.get_text())
+                            if num_str:
+                                try:
+                                    num = int(num_str.replace(',', ''))
+                                    if 1000 < num < 10000000:
+                                        return num
+                                except:
+                                    continue
         except:
             pass
         
