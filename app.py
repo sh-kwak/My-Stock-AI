@@ -774,17 +774,23 @@ def analyze_stock_v3(code, name, token):
         if upside < 10 or upside > 70:
             return None
         
-        # 12. [v3.1b 수정] 투자 등급 결정
-        # A등급(★★★): 중기 추세 + 수급 양호
-        if upside >= 40 and supply_score >= 1 and rsi < 60 and is_mid_bull:
+        # 12. [v3.1b 개선] 투자 등급 결정 - A등급 조건 완화
+        # A등급(★★★): 35%로 완화 + 중기 추세 + 수급 + 품질(ROE)
+        if upside >= 35 and supply_score >= 1 and rsi < 60 and is_mid_bull and roe >= 10:
             grade = "A"
             signal = "Strong Buy (★★★)"
-        # A등급(★): 25%로 완화 + 단기 추세 + 품질 조건
-        elif upside >= 25 and is_short_bull and rsi < 65:
-            # 품질 조건: 수급 양호 OR RSI 충분히 낮음
-            if supply_score >= 1 or rsi <= 55:
-                grade = "A"
-                signal = "Strong Buy (★)"
+        # A등급(★): RSI 68로 완화 + 단기 추세 허용치 확대 + 품질 조건
+        elif upside >= 25 and rsi < 68:
+            # 단기 추세 완화: MA20의 -1%까지 허용
+            near_short_bull = (price >= ma20 * 0.99)  # MA20 -1% 허용
+            if near_short_bull:
+                # 품질 조건: 수급 양호 OR RSI 충분히 낮음
+                if supply_score >= 1 or rsi <= 55:
+                    grade = "A"
+                    signal = "Strong Buy (★)"
+                else:
+                    grade = "B"
+                    signal = "Buy"
             else:
                 grade = "B"
                 signal = "Buy"
@@ -808,9 +814,9 @@ def analyze_stock_v3(code, name, token):
         else:
             trend_status = "하락 추세"
         
-        # 추세에 따른 등급 보정 (등급만 조정)
-        if not is_mid_bull and grade == "A" and not is_short_bull:
-            # 단기/중기 모두 하락이면 B로 강등
+        # [v3.1b 개선] 추세에 따른 등급 보정 - 완화
+        # 단기/중기 모두 하락 + RSI도 높을 때만 A→B 강등
+        if not is_mid_bull and grade == "A" and not is_short_bull and rsi >= 60:
             grade = "B"
         
         # 모든 종목에 추세 표기 추가
@@ -968,14 +974,14 @@ def main():
         top_n = st.number_input("분석 종목 수", min_value=10, max_value=200, value=50, step=10)
         
         st.markdown("---")
-        st.markdown("### 📊 Ver 3.1b 필터 기준")
+        st.markdown("### 📊 Ver 3.1b 필터 기준 (개선)")
         st.markdown("""
         - ✅ 투자 부적합 종목 자동 제외 (ROE<5% 등)
         - ✅ 괴리율: **10% ~ 70%**
         - ✅ RSI: **75 초과 제외**
         - ✅ 가치함정 필터: 종합적정가 60% 미만 제외 (예외 있음)
-        - ✅ A(★★★): 중기추세 + 수급 + 40%+
-        - ✅ A(★): 단기추세 + (수급 OR RSI≤55) + 25%+
+        - ✅ A(★★★): 중기추세 + 수급 + ROE≥10 + **35%+**
+        - ✅ A(★): MA20 -1% 허용 + (수급 OR RSI≤55) + **25%+**
         """)
         
         st.markdown("---")
