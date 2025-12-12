@@ -255,8 +255,9 @@ def get_technical_indicators(stock_code, access_token):
 
 def calculate_rsi(prices, period=14):
     """
-    [Phase 1.5 수정] RSI 계산 안정화
+    [v3.1b 수정] RSI 계산 안정화
     - loss=0 케이스 처리로 신호 왜곡 방지
+    - 70 고정 → 95 클램프로 변경 (과열 필터 정상 동작)
     """
     if len(prices) < period + 1:
         return 50.0
@@ -264,7 +265,7 @@ def calculate_rsi(prices, period=14):
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
     
-    # [Phase 1.5] loss=0 처리: 극단적 상승장에서 RSI가 100으로 튀는 것 방지
+    # [v3.1b] loss=0 처리: 극단치 폭주 방지, 단 과열 필터는 정상 작동
     loss_val = loss.iloc[-1]
     gain_val = gain.iloc[-1]
     
@@ -272,8 +273,8 @@ def calculate_rsi(prices, period=14):
         return 50.0
     
     if loss_val == 0:
-        # loss가 0이면 천장 부근으로 간주하되, 70으로 제한 (과열 신호)
-        return 70.0
+        # 강한 상승장 신호 유지, 95로 클램프 (RSI>75 필터 정상 동작)
+        return 95.0
     
     rs = gain_val / loss_val
     rsi = 100 - (100 / (1 + rs))
@@ -754,10 +755,17 @@ def analyze_stock_v3(code, name, token):
         if composite_target is None or composite_target <= 0:
             return None
         
-        # [Phase 1.5 수정] 가치함정 필터 완화: 종합적정가 기준으로 변경
-        # PER만 낮게 계산돼도 탈락하는 문제 해결
+        # [v3.1b 수정] 가치함정 필터 예외 조건 추가
+        # 기본: 종합적정가의 60% 미만이면 제외
+        # 예외: 품질이 좋거나 반등 조짐이 있으면 통과
         if composite_target and price < composite_target * 0.6:
-            return None  # 종합적정가의 60% 미만이면 과도한 저평가
+            # 예외 조건 1: ROE 높고 RSI 충분히 낮음 (우량 저평가)
+            exception1 = (roe >= 12 and rsi <= 55)
+            # 예외 조건 2: 수급 양호 + 단기 추세 상승 (반등 조짐)
+            exception2 = (supply_score >= 1 and is_short_bull)
+            
+            if not (exception1 or exception2):
+                return None  # 예외 충족 못하면 제외
         
         # 11. 괴리율 계산
         upside = ((composite_target - price) / price) * 100 if price > 0 else 0
@@ -766,15 +774,20 @@ def analyze_stock_v3(code, name, token):
         if upside < 10 or upside > 70:
             return None
         
-        # 12. [Phase 1 수정] 투자 등급 결정 - 중기 추세(60일선) 조건 강화
+        # 12. [v3.1b 수정] 투자 등급 결정
         # A등급(★★★): 중기 추세 + 수급 양호
         if upside >= 40 and supply_score >= 1 and rsi < 60 and is_mid_bull:
             grade = "A"
             signal = "Strong Buy (★★★)"
-        # A등급(★): 단기 추세만 확인
-        elif upside >= 30 and rsi < 65 and is_short_bull:
-            grade = "A"
-            signal = "Strong Buy (★)"
+        # A등급(★): 25%로 완화 + 단기 추세 + 품질 조건
+        elif upside >= 25 and is_short_bull and rsi < 65:
+            # 품질 조건: 수급 양호 OR RSI 충분히 낮음
+            if supply_score >= 1 or rsi <= 55:
+                grade = "A"
+                signal = "Strong Buy (★)"
+            else:
+                grade = "B"
+                signal = "Buy"
         elif upside >= 20 and rsi < 70:
             grade = "B"
             signal = "Buy"
@@ -784,7 +797,8 @@ def analyze_stock_v3(code, name, token):
         else:
             return None
         
-        # [Phase 1.5 수정] 추세 표기 2단계로 분리
+        
+        # [v3.1b 수정] 추세 표기 모든 종목에 통일 적용
         if is_mid_bull and is_short_bull:
             trend_status = "상승 추세"
         elif is_mid_bull and not is_short_bull:
@@ -794,16 +808,13 @@ def analyze_stock_v3(code, name, token):
         else:
             trend_status = "하락 추세"
         
-        # 추세에 따른 등급/의견 보정
-        if not is_mid_bull:
-            if grade == "A" and not is_short_bull:
-                # 단기/중기 모두 하락이면 B로 강등
-                grade = "B"
-                signal = f"Buy ({trend_status})"
-            elif grade == "A":
-                signal += f" ({trend_status})"
-            elif not is_short_bull and "Buy" in signal:
-                signal = f"Hold ({trend_status})"
+        # 추세에 따른 등급 보정 (등급만 조정)
+        if not is_mid_bull and grade == "A" and not is_short_bull:
+            # 단기/중기 모두 하락이면 B로 강등
+            grade = "B"
+        
+        # 모든 종목에 추세 표기 추가
+        signal = f"{signal} ({trend_status})"
         
         # 13. 밸류 점수 (0~100) - 보수적 조정
         value_score = min(100, int(
@@ -957,14 +968,14 @@ def main():
         top_n = st.number_input("분석 종목 수", min_value=10, max_value=200, value=50, step=10)
         
         st.markdown("---")
-        st.markdown("### 📊 Ver 3.1 필터 기준")
+        st.markdown("### 📊 Ver 3.1b 필터 기준")
         st.markdown("""
-        - ✅ 투자 부적합 종목 자동 제외
-        - ✅ 금융주 부채비율 예외처리
-        - ✅ PER적정가 > 현재가 90%
-        - ✅ 괴리율 10% ~ 50%
-        - ✅ RSI 75 이하
-        - ✅ A등급: 수급+추세 필수
+        - ✅ 투자 부적합 종목 자동 제외 (ROE<5% 등)
+        - ✅ 괴리율: **10% ~ 70%**
+        - ✅ RSI: **75 초과 제외**
+        - ✅ 가치함정 필터: 종합적정가 60% 미만 제외 (예외 있음)
+        - ✅ A(★★★): 중기추세 + 수급 + 40%+
+        - ✅ A(★): 단기추세 + (수급 OR RSI≤55) + 25%+
         """)
         
         st.markdown("---")
