@@ -76,8 +76,8 @@ def get_krx_listing():
 
 def map_to_common_stock_code(stock_code, stock_name):
     """
-    우선주면 보통주 코드를 찾아서 반환.
-    못 찾으면 원래 코드 반환.
+    [Phase 2.1 수정] 우선주면 보통주 코드를 찾아서 반환.
+    완전일치 우선, 못 찾으면 원래 코드 반환.
     """
     import re
     
@@ -89,10 +89,15 @@ def map_to_common_stock_code(stock_code, stock_name):
     if df is None or len(df) == 0:
         return stock_code
     
-    # 우선주 접미어 제거한 베이스 이름 (예: '현대차2우B' -> '현대차')
+    # 우선주 접미어 제거한 베이스 이름 ('현대차2우B' -> '현대차')
     base = re.sub(r'\s*\d?우.*$', '', stock_name).strip()
     
-    # 보통주 후보: 이름이 base로 시작하고 '우'가 없는 것 중 시총 최대
+    # [Phase 2.1] 우선 1: 완전 일치 (오매핑 방지)
+    exact_match = df[(df['Name'] == base)]
+    if len(exact_match) > 0:
+        return str(exact_match.iloc[0]['Code'])
+    
+    # 우선 2: startswith 매칭 (시총 최대)
     candidates = df[(df['Name'].str.startswith(base)) & (~df['Name'].str.contains('우'))]
     if len(candidates) == 0:
         return stock_code
@@ -195,8 +200,15 @@ def get_comprehensive_financial_data(stock_code, stock_name=""):
             recent_col = fin_df.columns[-2]  # 가장 최근 실적
             
             result['bps'] = get_val('BPS(원)', recent_col)
-            result['roe'] = get_val('ROE', recent_col) or 0.0
-            result['debt_ratio'] = get_val('부채비율', recent_col) or 0.0
+            roe_raw = get_val('ROE', recent_col) or 0.0
+            debt_raw = get_val('부채비율', recent_col) or 0.0
+            
+            # [Phase 2.1 수정] 재무 데이터 검증 - 클램프 (우량주 보호)
+            # ROE: -30% ~ 60% 범위로 클램프 (극단값 제거, 0으로 만들지 않음)
+            result['roe'] = max(-30.0, min(roe_raw, 60.0))
+            
+            # 부채비율: 최대 1000%로 클램프
+            result['debt_ratio'] = min(debt_raw, 1000.0)
         
         # 과거 PER 히스토리 (밴드 분석용)
         outlier = 100.0 if '바이오' in stock_name or '셀트리온' in stock_name else 50.0
@@ -244,9 +256,10 @@ def get_comprehensive_financial_data(stock_code, stock_name=""):
 
 def get_technical_indicators(stock_code, access_token):
     """
-    [Phase 1 수정] 기술적 지표: MA20, MA60, RSI
-    - 단기 추세(20일선): is_short_bull
-    - 중기 추세(60일선): is_mid_bull
+    [Phase 2.1 개선] 기술적 지표: MA20, MA60, RSI, 거래대금, ATR
+    - 단기/중기 추세
+    - 유동성 (거래대금)
+    - 변동성 (ATR)
     """
     url = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-price"
     headers = {
@@ -260,55 +273,92 @@ def get_technical_indicators(stock_code, access_token):
     try:
         res = requests.get(url, headers=headers, params=params)
         data = res.json()
-        if data['rt_cd'] != '0': return None, None, False, False, 50.0
+        if data['rt_cd'] != '0': return None, None, False, False, 50.0, 0, 0
         
-        daily_prices_desc = [float(x['stck_clpr']) for x in data['output']]
+        output_data = data['output']
+        if len(output_data) < 20: return None, None, False, False, 50.0, 0, 0
+        
+        daily_prices_desc = [float(x['stck_clpr']) for x in output_data]
         daily_prices_asc = daily_prices_desc[::-1]
+        current_price = daily_prices_desc[0]
         
-        if len(daily_prices_desc) < 20: return None, None, False, False, 50.0
-            
         # 20일 이동평균선 (단기 추세)
         ma20 = sum(daily_prices_desc[:20]) / 20.0
-        current_price = daily_prices_desc[0]
         is_short_bull = current_price >= ma20
         
-        # 60일 이동평균선 (중기 추세) - 데이터 부족 시 20일선 사용
+        # 60일 이동평균선 (중기 추세)
         if len(daily_prices_desc) >= 60:
             ma60 = sum(daily_prices_desc[:60]) / 60.0
         else:
-            ma60 = ma20  # 데이터 부족 시 20일선으로 대체
+            ma60 = ma20
         is_mid_bull = current_price >= ma60
         
         # RSI 계산
         rsi_val = calculate_rsi(daily_prices_asc)
         if pd.isna(rsi_val): rsi_val = 50.0
-            
-        return ma20, ma60, is_short_bull, is_mid_bull, rsi_val
+        
+        # [Phase 2.1 수정] 거래대금 (최근 20일 평균)
+        # KIS API에서 acml_tr_pbmn(거래대금 필드) 사용, 없으면 volume*price로 계산
+        trading_values = []
+        for x in output_data[:20]:
+            try:
+                # 우선: 거래대금 필드 사용 (더 정확)
+                tv = float(x.get('acml_tr_pbmn', 0))
+                if tv > 0:
+                    trading_values.append(tv)
+                else:
+                    # 대체: volume * price
+                    volume = float(x.get('acml_vol', 0))
+                    price_val = float(x.get('stck_clpr', 0))
+                    trading_values.append(volume * price_val)
+            except:
+                pass
+        avg_trading_value = sum(trading_values) / len(trading_values) if trading_values else 0
+        
+        # [Phase 2.1] ATR (Average True Range) - 14일 기준
+        if len(output_data) >= 14:
+            true_ranges = []
+            for i in range(min(14, len(output_data) - 1)):
+                high = float(output_data[i]['stck_hgpr'])
+                low = float(output_data[i]['stck_lwpr'])
+                prev_close = float(output_data[i+1]['stck_clpr'])
+                tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                true_ranges.append(tr)
+            atr = sum(true_ranges) / len(true_ranges) if true_ranges else 0
+        else:
+            atr = 0
+        
+        return ma20, ma60, is_short_bull, is_mid_bull, rsi_val, avg_trading_value, atr
     except: 
-        return None, None, False, False, 50.0
+        return None, None, False, False, 50.0, 0, 0
 
 def calculate_rsi(prices, period=14):
     """
-    [v3.1b 수정] RSI 계산 안정화
-    - loss=0 케이스 처리로 신호 왜곡 방지
-    - 70 고정 → 95 클램프로 변경 (과열 필터 정상 동작)
+    [Phase 2.1] RSI 계산 - Wilder smoothing 방식
+    - 시장 표준 RSI와 일치
+    - EMA 기반 gain/loss 평활화
     """
     if len(prices) < period + 1:
         return 50.0
-    delta = pd.Series(prices).diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
     
-    # [v3.1b] loss=0 처리: 극단치 폭주 방지, 단 과열 필터는 정상 작동
-    loss_val = loss.iloc[-1]
-    gain_val = gain.iloc[-1]
+    delta = pd.Series(prices).diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    
+    # [Phase 2.1] Wilder smoothing (EMA with alpha = 1/period)
+    alpha = 1.0 / period
+    avg_gain = gain.ewm(alpha=alpha, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=alpha, adjust=False).mean()
+    
+    # loss=0 처리
+    loss_val = avg_loss.iloc[-1]
+    gain_val = avg_gain.iloc[-1]
     
     if pd.isna(loss_val) or pd.isna(gain_val):
         return 50.0
     
     if loss_val == 0:
-        # 강한 상승장 신호 유지, 95로 클램프 (RSI>75 필터 정상 동작)
-        return 95.0
+        return 95.0  # 강한 상승장, 과열 필터 정상 작동
     
     rs = gain_val / loss_val
     rsi = 100 - (100 / (1 + rs))
@@ -729,9 +779,22 @@ def analyze_stock_v3(code, name, token):
         if not is_ok:
             return None  # 투자 부적합 종목 제외
         
-        # 4. [Phase 1 수정] 기술적 지표 - MA20, MA60, 단기/중기 추세
-        ma20, ma60, is_short_bull, is_mid_bull, rsi = get_technical_indicators(code, token)
+        # 4. [Phase 2.1 개선] 기술적 지표 + 거래대금/변동성
+        result_tech = get_technical_indicators(code, token)
+        if result_tech[0] is None:  # 데이터 없음
+            return None
+        ma20, ma60, is_short_bull, is_mid_bull, rsi, avg_trading_value, atr = result_tech
         supply_score, supply_msg = get_supply_score(code, token)
+        
+        # [Phase 2.1] 유동성 필터: 거래대금 10억 미만 제외
+        if avg_trading_value < 1_000_000_000:  # 10억 원
+            return None
+        
+        # [Phase 2.1 수정] 고변동성 경고: ATR이 가격의 10% 초과 시 제외 (완화)
+        price = stock_info.get('price', 0)
+        atr_pct = atr / price if price > 0 else 0
+        if atr_pct > 0.10:  # 10% 초과만 제외 (5%는 너무 빡셈)
+            return None
         
         # RSI 과열 종목 제외
         if rsi > 75:
