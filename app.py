@@ -57,20 +57,51 @@ def get_access_token():
         return None
 
 @st.cache_data(ttl=3600)
-def get_top_stocks(limit=100):
+def get_top_stocks(limit=400):
+    """시총 상위 종목 조회 (우선주, ETF, 펀드 제외)"""
+    df_total = None
+    
+    # 방법 1: KRX 전체 조회 시도
     try:
         df_total = fdr.StockListing('KRX')
-        if df_total is None or df_total.empty:
-            st.warning("⚠️ KRX 데이터가 비어있습니다. 데이터 소스를 확인해주세요.")
+    except:
+        pass
+    
+    # 방법 2: KRX 실패 시 KOSPI + KOSDAQ 개별 조회
+    if df_total is None or df_total.empty:
+        try:
+            df_kospi = fdr.StockListing('KOSPI')
+            df_kosdaq = fdr.StockListing('KOSDAQ')
+            df_total = pd.concat([df_kospi, df_kosdaq], ignore_index=True)
+            st.info("ℹ️ KOSPI+KOSDAQ 개별 조회로 종목 리스트를 가져왔습니다.")
+        except Exception as e:
+            st.error(f"⚠️ 종목 리스트 조회 실패: {str(e)}")
             return [], None
-        df_top = df_total.sort_values(by='Marcap', ascending=False).head(limit)
-        stock_list = []
-        for idx, row in df_top.iterrows():
-            stock_list.append((str(row['Code']), row['Name']))
-        return stock_list, df_total  # KRX 전체 리스팅도 반환
-    except Exception as e:
-        st.error(f"⚠️ 종목 리스트 조회 실패: {str(e)}")
+    
+    if df_total is None or df_total.empty:
+        st.warning("⚠️ KRX 데이터가 비어있습니다.")
         return [], None
+    
+    # 우선주 제외 (우, 우B, 1우, 2우, 3우 등)
+    df_filtered = df_total[~df_total['Name'].str.contains(r'우$|우B$|\d우|우선주', regex=True, na=False)]
+    
+    # ETF, ETN, 펀드, 리츠 제외
+    etf_keywords = ['ETF', 'ETN', 'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 
+                    'SOL', 'KINDEX', 'KOSEF', 'ACE', '펀드', '리츠', 'PLUS', 'RISE']
+    pattern = '|'.join(etf_keywords)
+    df_filtered = df_filtered[~df_filtered['Name'].str.contains(pattern, case=False, na=False)]
+    
+    # 스팩(SPAC) 제외
+    df_filtered = df_filtered[~df_filtered['Name'].str.contains(r'스팩|SPAC|\d호$', regex=True, na=False)]
+    
+    # 시총 기준 정렬 후 상위 N개
+    df_top = df_filtered.sort_values(by='Marcap', ascending=False).head(limit)
+    
+    stock_list = []
+    for idx, row in df_top.iterrows():
+        stock_list.append((str(row['Code']), row['Name']))
+    
+    return stock_list, df_total
 
 @st.cache_data(ttl=3600)
 def get_krx_listing():
