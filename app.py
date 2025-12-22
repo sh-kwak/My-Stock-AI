@@ -60,12 +60,16 @@ def get_access_token():
 def get_top_stocks(limit=100):
     try:
         df_total = fdr.StockListing('KRX')
+        if df_total is None or df_total.empty:
+            st.warning("⚠️ KRX 데이터가 비어있습니다. 데이터 소스를 확인해주세요.")
+            return [], None
         df_top = df_total.sort_values(by='Marcap', ascending=False).head(limit)
         stock_list = []
         for idx, row in df_top.iterrows():
             stock_list.append((str(row['Code']), row['Name']))
         return stock_list, df_total  # KRX 전체 리스팅도 반환
-    except:
+    except Exception as e:
+        st.error(f"⚠️ 종목 리스트 조회 실패: {str(e)}")
         return [], None
 
 @st.cache_data(ttl=3600)
